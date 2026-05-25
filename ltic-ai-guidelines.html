@@ -1,0 +1,931 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LTIC — AI Tool Use, At a Glance</title>
+  <style>
+    /* ---------- page + print ---------- */
+    @page {
+      size: letter;
+      margin: 0.3in;
+    }
+
+    :root {
+      --ink:        #14171c;
+      --ink-soft:   #3b4250;
+      --ink-faint:  #6b7280;
+      --rule:       #d8dce3;
+      --paper:      #fdfcf8;
+      --ubc-navy:   #002145;
+
+      --stop:       #b3122c;
+      --stop-tint:  #fdecef;
+      --stop-edge:  #f3b9c3;
+
+      --warn:       #a25500;
+      --warn-tint:  #fdf2dd;
+      --warn-edge:  #efd49a;
+
+      --go:         #15663a;
+      --go-tint:    #e8f4ec;
+      --go-edge:    #b1d6bf;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: #eee;
+      color: var(--ink);
+      font-family: "Inter", "Helvetica Neue", Helvetica, Arial, system-ui, sans-serif;
+      font-feature-settings: "ss01", "cv11";
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* on-screen: simulate a paper sheet so the user sees the print result */
+    .sheet {
+      width: 8.5in;
+      min-height: 11in;
+      margin: 24px auto;
+      padding: 0.35in;
+      background: var(--paper);
+      box-shadow: 0 8px 28px rgba(0,0,0,0.12);
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    @media print {
+      html, body { background: white; }
+      .sheet {
+        width: auto;
+        min-height: 0;
+        margin: 0;
+        padding: 0;
+        box-shadow: none;
+      }
+    }
+
+    /* ---------- header ---------- */
+    header.masthead {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      align-items: end;
+      gap: 16px;
+      border-bottom: 2px solid var(--ubc-navy);
+      padding-bottom: 10px;
+    }
+
+    .eyebrow {
+      font-size: 9.5px;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      font-weight: 600;
+      color: var(--ubc-navy);
+      margin: 0 0 4px 0;
+    }
+
+    h1 {
+      font-family: "Georgia", "Iowan Old Style", serif;
+      font-weight: 600;
+      font-size: 22px;
+      line-height: 1.05;
+      letter-spacing: -0.01em;
+      margin: 0;
+      color: var(--ink);
+    }
+
+    h1 em {
+      font-style: italic;
+      color: var(--ubc-navy);
+    }
+
+    .deck {
+      margin: 6px 0 0 0;
+      font-size: 11px;
+      color: var(--ink-soft);
+      max-width: 5.6in;
+      line-height: 1.45;
+    }
+
+    .stamp {
+      text-align: right;
+      font-size: 9px;
+      color: var(--ink-faint);
+      line-height: 1.4;
+    }
+    .stamp strong { color: var(--ink); display: block; font-size: 10px; }
+
+    /* ---------- traffic-light rows ---------- */
+    .row {
+      display: grid;
+      grid-template-columns: 88px 1fr;
+      gap: 12px;
+      border: 1px solid var(--rule);
+      border-left-width: 6px;
+      border-radius: 4px;
+      padding: 8px 12px;
+      background: white;
+      page-break-inside: avoid;
+    }
+
+    .row.stop   { border-left-color: var(--stop); background: var(--stop-tint); border-color: var(--stop-edge); }
+    .row.warn   { border-left-color: var(--warn); background: var(--warn-tint); border-color: var(--warn-edge); }
+    .row.go     { border-left-color: var(--go);   background: var(--go-tint);   border-color: var(--go-edge);   }
+
+    .sigil {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      gap: 4px;
+    }
+    .sigil svg { display: block; }
+
+    .sigil .word {
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+    }
+    .stop .word { color: var(--stop); }
+    .warn .word { color: var(--warn); }
+    .go   .word { color: var(--go); }
+
+    .body h2 {
+      font-family: "Georgia", "Iowan Old Style", serif;
+      font-size: 14px;
+      font-weight: 600;
+      margin: 0 0 2px 0;
+      letter-spacing: -0.005em;
+    }
+    .stop .body h2 { color: var(--stop); }
+    .warn .body h2 { color: var(--warn); }
+    .go   .body h2 { color: var(--go); }
+
+    .body .rubric {
+      font-size: 10.5px;
+      color: var(--ink-soft);
+      margin: 0 0 6px 0;
+      line-height: 1.4;
+    }
+
+    .examples {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      column-gap: 14px;
+      row-gap: 1px;
+      font-size: 9.5px;
+      line-height: 1.3;
+    }
+
+    .examples li {
+      position: relative;
+      padding-left: 12px;
+      color: var(--ink);
+    }
+    .row .caveat {
+      font-size: 8.5px;
+      line-height: 1.4;
+      color: var(--ink-faint);
+      font-style: italic;
+      margin: 5px 0 0 0;
+      padding-top: 4px;
+      border-top: 1px dashed rgba(0,0,0,0.08);
+    }
+    .row .caveat strong {
+      color: var(--ink-soft);
+      font-style: normal;
+    }
+    .vendor-card .iss-line {
+      margin: 6px 0 0 0;
+      font-size: 9px;
+      line-height: 1.4;
+      color: var(--ink-faint);
+      font-style: italic;
+    }
+    .vendor-card .iss-line strong {
+      color: var(--ink-soft);
+      font-style: normal;
+    }
+    .row .rubric .iss {
+      color: var(--ink);
+      font-weight: 600;
+    }
+    .examples li::before {
+      content: "";
+      position: absolute;
+      left: 0;
+      top: 0.45em;
+      width: 5px;
+      height: 5px;
+      border-radius: 1px;
+    }
+    .stop .examples li::before { background: var(--stop); }
+    .warn .examples li::before { background: var(--warn); transform: rotate(45deg); border-radius: 0; }
+    .go   .examples li::before { background: var(--go); border-radius: 50%; }
+
+    /* ---------- patterns / hints panel ---------- */
+    .patterns {
+      border: 1px solid var(--rule);
+      border-radius: 4px;
+      padding: 10px 12px;
+      background: white;
+      page-break-inside: avoid;
+    }
+
+    .patterns h3 {
+      font-family: "Georgia", serif;
+      font-size: 13px;
+      font-weight: 600;
+      margin: 0 0 6px 0;
+      color: var(--ubc-navy);
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+    }
+    .patterns h3 .kicker {
+      font-family: "Inter", sans-serif;
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--ink-faint);
+    }
+
+    .tips {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 4px 16px;
+      font-size: 9.5px;
+      line-height: 1.35;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+    .tips li {
+      display: grid;
+      grid-template-columns: 18px 1fr;
+      gap: 6px;
+      align-items: start;
+    }
+    .tips .n {
+      font-family: "Georgia", serif;
+      font-style: italic;
+      color: var(--ubc-navy);
+      font-size: 11px;
+      line-height: 1.3;
+    }
+    .tips code {
+      font-family: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+      font-size: 9.5px;
+      background: #f1efe8;
+      padding: 0 3px;
+      border-radius: 2px;
+      color: #2d2d2d;
+    }
+    .tips strong { color: var(--ink); }
+
+    /* ---------- vendor comparison cards ---------- */
+    .vendors-section {
+      border: 1px solid var(--rule);
+      border-left: 6px solid var(--ubc-navy);
+      border-radius: 4px;
+      padding: 10px 12px;
+      background: #f4f6fa;
+      page-break-inside: avoid;
+    }
+    .vendors-section .vendors-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 8px;
+    }
+    .vendors-section h3 {
+      font-family: "Georgia", serif;
+      font-size: 13px;
+      font-weight: 600;
+      margin: 0;
+      color: var(--ubc-navy);
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+    }
+    .vendors-section h3 .kicker {
+      font-family: "Inter", sans-serif;
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--ink-faint);
+    }
+    .vendors-section .verified {
+      font-size: 8.5px;
+      color: var(--ink-faint);
+      font-style: italic;
+    }
+    .vendor-grid {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .vendor-card {
+      background: white;
+      border: 1px solid #d8dce3;
+      border-radius: 3px;
+      padding: 8px 12px;
+      page-break-inside: avoid;
+    }
+    .vendor-card .v-head {
+      display: flex;
+      align-items: baseline;
+      gap: 10px;
+      border-bottom: 1px solid #ebeef3;
+      padding-bottom: 4px;
+      margin-bottom: 6px;
+      flex-wrap: wrap;
+    }
+    .vendor-card h4 {
+      font-family: "Georgia", serif;
+      font-size: 12.5px;
+      font-weight: 600;
+      margin: 0;
+      color: var(--ink);
+    }
+    .vendor-card .v-tag {
+      font-size: 8.5px;
+      letter-spacing: 0.07em;
+      color: var(--ink-faint);
+      text-transform: uppercase;
+    }
+    .vendor-card .v-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 4px 16px;
+    }
+    .vendor-card .v-grid section {
+      margin: 0;
+      padding: 0;
+    }
+    .vendor-card h5 {
+      font-size: 10px;
+      font-weight: 700;
+      margin: 0 0 2px 0;
+      color: var(--ink);
+      letter-spacing: 0.005em;
+    }
+    .vendor-card .v-grid p {
+      margin: 0;
+      color: var(--ink-soft);
+      font-size: 9.5px;
+      line-height: 1.36;
+    }
+    .vendor-card strong { color: var(--ink); }
+    .vendor-card code {
+      font-family: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+      font-size: 9px;
+      background: #f1efe8;
+      padding: 0 2px;
+      border-radius: 2px;
+      color: #2d2d2d;
+      white-space: nowrap;
+    }
+    .vendor-card a {
+      color: var(--ubc-navy);
+      text-decoration: underline;
+      text-decoration-thickness: 0.5px;
+      text-underline-offset: 1.5px;
+    }
+    .vendor-card .v-src {
+      margin-top: 6px;
+      padding-top: 4px;
+      border-top: 1px dashed #ebeef3;
+      font-size: 8.5px;
+      color: var(--ink-faint);
+      line-height: 1.45;
+    }
+    .vendor-card .v-src strong { color: var(--ink-soft); }
+    .vendor-card .v-src .src + .src::before {
+      content: " · ";
+      color: #b9c0cc;
+    }
+
+    /* ---------- claude code specifics card (legacy, unused) ---------- */
+    .cc-card {
+      border: 1px solid var(--rule);
+      border-left: 6px solid var(--ubc-navy);
+      border-radius: 4px;
+      padding: 10px 12px;
+      background: #f4f6fa;
+      page-break-inside: avoid;
+    }
+    .cc-card header.cc-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 6px;
+      border: none;
+      padding: 0;
+    }
+    .cc-card h3 {
+      font-family: "Georgia", serif;
+      font-size: 13px;
+      font-weight: 600;
+      margin: 0;
+      color: var(--ubc-navy);
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+    }
+    .cc-card h3 .kicker {
+      font-family: "Inter", sans-serif;
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--ink-faint);
+    }
+    .cc-card .verified {
+      font-size: 8.5px;
+      color: var(--ink-faint);
+      font-style: italic;
+    }
+    .cc-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 10px 14px;
+      font-size: 10px;
+      line-height: 1.4;
+    }
+    .cc-grid section { margin: 0; padding: 0; }
+    .cc-grid h4 {
+      font-size: 10px;
+      font-weight: 700;
+      margin: 0 0 2px 0;
+      color: var(--ink);
+      letter-spacing: 0.005em;
+    }
+    .cc-grid p { margin: 0; color: var(--ink-soft); }
+    .cc-grid code {
+      font-family: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+      font-size: 9px;
+      background: #e6eaf2;
+      padding: 0 3px;
+      border-radius: 2px;
+      color: #1d2735;
+      white-space: nowrap;
+    }
+    .cc-sources {
+      margin-top: 8px;
+      padding-top: 6px;
+      border-top: 1px dashed #c8cfdc;
+      font-size: 8.5px;
+      color: var(--ink-faint);
+      line-height: 1.45;
+    }
+    .cc-sources strong { color: var(--ink-soft); }
+    .cc-sources .src + .src::before {
+      content: " · ";
+      color: #b9c0cc;
+    }
+    .cc-sources a {
+      color: var(--ubc-navy);
+      text-decoration: underline;
+      text-decoration-thickness: 0.5px;
+      text-underline-offset: 2px;
+    }
+    .cc-sources a:hover { color: #003a7a; }
+
+    .cc-grid a {
+      color: var(--ubc-navy);
+      text-decoration: underline;
+      text-decoration-thickness: 0.5px;
+      text-underline-offset: 1.5px;
+    }
+    .cc-grid a code { color: var(--ubc-navy); }
+
+    /* ---------- footer ---------- */
+    footer {
+      margin-top: auto;
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 10px;
+      align-items: end;
+      border-top: 1px solid var(--rule);
+      padding-top: 8px;
+      font-size: 8.5px;
+      color: var(--ink-faint);
+      line-height: 1.4;
+    }
+    footer .rule-of-thumb {
+      font-family: "Georgia", serif;
+      font-style: italic;
+      font-size: 10.5px;
+      color: var(--ink);
+    }
+    footer .rule-of-thumb strong {
+      font-style: normal;
+      color: var(--ubc-navy);
+    }
+  </style>
+</head>
+<body>
+  <main class="sheet" role="document" aria-label="LTIC AI use policy, one-page reference">
+
+    <header class="masthead">
+      <div>
+        <p class="eyebrow">LTIC · University of British Columbia</p>
+        <h1>Working with AI tools, <em>at a glance</em></h1>
+        <p class="deck">
+          A one-page rule of thumb for when it's OK to put information into AI assistants
+          (Claude, Claude&nbsp;Code, ChatGPT, Copilot, and similar). When in doubt, err one category up and ask.
+        </p>
+      </div>
+      <div class="stamp">
+        <strong>v0.4 · draft</strong>
+        Effective 2026<br/>
+        Owner: LTIC<br/>
+        Review: annually
+      </div>
+    </header>
+
+    <!-- RED -->
+    <section class="row stop" aria-labelledby="stop-h">
+      <div class="sigil" aria-hidden="true">
+        <!-- octagon (stop) -->
+        <svg width="44" height="44" viewBox="0 0 44 44">
+          <polygon points="13,2 31,2 42,13 42,31 31,42 13,42 2,31 2,13"
+                   fill="#b3122c" stroke="#7d0a1d" stroke-width="1.5"/>
+          <text x="22" y="27" text-anchor="middle"
+                font-family="Inter, Helvetica, Arial, sans-serif"
+                font-size="11" font-weight="800" fill="#fff" letter-spacing="0.05em">STOP</text>
+        </svg>
+        <span class="word">Do not share</span>
+      </div>
+      <div class="body">
+        <h2 id="stop-h">Don't put this into an AI tool</h2>
+        <p class="rubric">
+          Anything that points to a real, identifiable person, or that UBC has a legal duty to protect (FIPPA) — including information that could be reconstructed to identify an individual. Models can also attach meaning to identifiers in ways that introduce bias, so strip names, IDs, and other identifiers from prompts unless they're absolutely necessary.
+          If you wouldn't email it to a stranger, don't paste it into a chat with an unsupported service. Oversharing also creates IP reconstruction risk depending on the tool.
+          <span class="iss">≈ ISS U1 High / Very High.</span>
+        </p>
+        <ul class="examples">
+          <li>Student names, IDs, emails, grades</li>
+          <li>Identifiable course feedback or evaluations</li>
+          <li>Instructor personnel info, performance notes</li>
+          <li>Accessibility / accommodation records</li>
+          <li>Health, financial, or HR information</li>
+          <li>Confidential meeting notes about people</li>
+          <li>Passwords, API keys, tokens, secrets</li>
+          <li>Unpublished research with identifiable subjects</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- YELLOW -->
+    <section class="row warn" aria-labelledby="warn-h">
+      <div class="sigil" aria-hidden="true">
+        <!-- triangle (caution) -->
+        <svg width="44" height="44" viewBox="0 0 44 44">
+          <polygon points="22,3 42,40 2,40"
+                   fill="#d98f1c" stroke="#8a5a0e" stroke-width="1.5"/>
+          <text x="22" y="33" text-anchor="middle"
+                font-family="Inter, Helvetica, Arial, sans-serif"
+                font-size="16" font-weight="800" fill="#3a2a05">!</text>
+        </svg>
+        <span class="word">Sanitize first</span>
+      </div>
+      <div class="body">
+        <h2 id="warn-h">Weigh the harm — de-identify, or ask the owner</h2>
+        <p class="rubric">
+            Internal-but-sensitive material <span class="iss">≈ ISS U1 Medium.</span>
+            Before you share, weigh the potential harm and whether the tool actually needs identifying detail to do the work —
+            de-identify wherever you can to limit bias and protect identity. Protected IP carries its own obligations:
+            research data, Indigenous data (OCAP-governed), and other rights-bearing material may need permissions beyond FIPPA.
+            If you're unsure how something is classified or what the risk looks like, ask the information owner before you paste.
+            Use institutionally supported or endorsed tools where you can. Medium-risk work should run on an institutionally supported service,
+            or get Administrative Head approval to execute a clickthrough agreement under Signing Resolution #26 (SR#26).
+        </p>
+        <ul class="examples">
+          <li>De-identified or aggregated student data</li>
+          <li>Anonymized survey results</li>
+          <li>Draft policies, internal comms, planning docs</li>
+          <li>Unpublished course materials &amp; assessments</li>
+          <li>Internal workflows &amp; process docs</li>
+          <li>Log / analytics data that could re-identify</li>
+          <li>Vendor contracts &amp; procurement details</li>
+          <li>Anything marked "internal" or "draft"</li>
+          <li>Research data, Indigenous data (OCAP)</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- GREEN -->
+    <section class="row go" aria-labelledby="go-h">
+      <div class="sigil" aria-hidden="true">
+        <!-- circle (go) -->
+        <svg width="44" height="44" viewBox="0 0 44 44">
+          <circle cx="22" cy="22" r="19" fill="#15663a" stroke="#0a3d22" stroke-width="1.5"/>
+          <text x="22" y="27" text-anchor="middle"
+                font-family="Inter, Helvetica, Arial, sans-serif"
+                font-size="13" font-weight="800" fill="#fff" letter-spacing="0.04em">GO</text>
+        </svg>
+        <span class="word">Generally OK</span>
+      </div>
+      <div class="body">
+        <h2 id="go-h">Work freely &mdash; this is what AI is for</h2>
+        <p class="rubric">
+          Anything that isn't about a specific person and doesn't contain secrets. You own the output —
+          still review what comes back
+          <span class="iss">≈ ISS U1 Low / public-equivalent.</span>
+        </p>
+        <ul class="examples">
+          <li>UBC / LTIC source code &amp; repositories</li>
+          <li>Canvas API, Academic API, other UBC integrations</li>
+          <li>Generic code, scripts, refactors (no secrets / keys)</li>
+          <li>Public-facing content already published</li>
+          <li>Generic templates, boilerplate, emails</li>
+          <li>Brainstorming, outlines, framing</li>
+          <li>Literature review of public sources</li>
+          <li>Documentation &amp; technical writing</li>
+          <li>Learning a new tool, language, or concept</li>
+          <li>System architecture, pseudocode, diagrams</li>
+        </ul>
+        <p class="caveat">
+          <strong>Caveat —</strong> green-zone safety assumes <em>training is off</em> on whatever tool
+          you're using (see vendor cards below). With training on, institutional code raises
+          copyright / IP questions — but unlike PII (red), it's never a FIPPA issue.
+          Consumer Claude / Gemini / ChatGPT plans <strong>do not inherently meet UBC's ISS U9 contractual requirements</strong>,
+          so keep within ISS U1 Low on those tools.
+        </p>
+      </div>
+    </section>
+
+    <!-- PATTERNS -->
+    <section class="patterns" aria-labelledby="pat-h">
+      <h3 id="pat-h">Helpful patterns <span class="kicker">when in doubt</span></h3>
+      <ol class="tips">
+        <li><span class="n">1.</span><span>
+          <strong>Ask AI to sanitize, locally.</strong> Working with PII? Ask Claude to write a script that
+          de-identifies the file on your machine — share only the cleaned output back.
+        </span></li>
+        <li><span class="n">2.</span><span>
+          <strong>Aggregate before you ask.</strong> Turn "students &amp; grades" into "grade distribution
+          by cohort." The pattern survives; the people don't.
+        </span></li>
+        <li><span class="n">3.</span><span>
+          <strong>Keep secrets in <code>.env</code>.</strong> Never paste keys, tokens, or DB strings into a
+          chat — refer to them by name and let your code load them.
+        </span></li>
+        <li><span class="n">4.</span><span>
+          <strong>Mind the border.</strong> All major AI services process data outside Canada — that's
+          a FIPPA issue for identifiable info. Sanitize first, or use an approved tool.
+        </span></li>
+        <li><span class="n">5.</span><span>
+          <strong>Sandbox agentic tools.</strong> Run Claude Code, Cursor, or similar in a DevContainer,
+          Docker container, or WSL VM — isolate the agent's reach to a single project folder,
+          not your whole filesystem.
+        </span></li>
+        <li><span class="n">6.</span><span>
+          <strong>Least-privilege access.</strong> Grant read-only tokens where possible. Work from a
+          sanitized copy of the repo rather than a live branch. Scope service accounts to the task,
+          not the organization.
+        </span></li>
+        <li><span class="n">7.</span><span>
+          <strong>Exclude with ignore files.</strong> Add a <code>.copilotignore</code> or
+          <code>.cursorignore</code> (mirrors <code>.gitignore</code> syntax) to block secrets,
+          config files, and credential stores from the agent's indexing context.
+        </span></li>
+        <li><span class="n">8.</span><span>
+          <strong>Disable autorun.</strong> Turn off autonomous execution modes in agentic tools.
+          Maintain an allowlist of permitted shell commands — every action the agent proposes
+          to run should require explicit human approval before it executes.
+        </span></li>
+      </ol>
+    </section>
+
+    <!-- ATF 5 QUESTIONS -->
+    <section class="patterns" aria-labelledby="atf-h">
+      <h3 id="atf-h">Before you deploy an agentic coding tool <span class="kicker">CSA Agentic Trust Framework</span></h3>
+      <ol class="tips">
+        <li><span class="n">1.</span><span>
+          <strong>Who are you?</strong> Does the tool have a verified, auditable identity?
+          Use a dedicated service account — not your personal credentials — so AI-generated
+          activity is clearly attributable in audit logs.
+        </span></li>
+        <li><span class="n">2.</span><span>
+          <strong>What are you doing?</strong> Can you observe and log the agent's actions in real time?
+          Agentic tools should produce an audit trail you can review. If you can't see what
+          it did, you can't govern it.
+        </span></li>
+        <li><span class="n">3.</span><span>
+          <strong>What are you eating?</strong> What data is the agent ingesting — prompts, files,
+          repo contents? Validate inputs before they reach the model. Sensitive files should
+          be excluded via ignore rules before indexing begins.
+        </span></li>
+        <li><span class="n">4.</span><span>
+          <strong>Where can you go?</strong> What systems, files, and APIs can the agent reach?
+          Enforce boundaries before you start. Sandboxing, read-only tokens, and scoped
+          service accounts limit the blast radius of an error or a prompt injection.
+        </span></li>
+        <li><span class="n">5.</span><span>
+          <strong>What if you go rogue?</strong> Can you stop it? Know how to kill the session,
+          revoke its credentials, and roll back any changes it made. Disable autorun so you
+          retain a human-approval gate before anything executes.
+        </span></li>
+      </ol>
+      <p style="font-size:8.5px;color:var(--ink-faint);margin:6px 0 0 0;font-style:italic;">
+        Based on the <a href="https://cloudsecurityalliance.org/blog/2026/02/02/the-agentic-trust-framework-zero-trust-governance-for-ai-agents" style="color:var(--ubc-navy);">CSA Agentic Trust Framework</a> (Feb 2026) — Identity, Behavior, Data Governance, Segmentation, Incident Response.
+      </p>
+    </section>
+
+    <!-- VENDOR COMPARISON -->
+    <section class="vendors-section" aria-labelledby="vendors-h">
+      <header class="vendors-head">
+        <h3 id="vendors-h">AI tools at a glance <span class="kicker">what the policies actually say</span></h3>
+        <span class="verified">verified May 2026</span>
+      </header>
+      <div class="vendor-grid">
+
+        <!-- CLAUDE -->
+        <article class="vendor-card">
+          <div class="v-head">
+            <h4>Claude · Claude Code</h4>
+            <span class="v-tag">Free · Pro · Max · Team · Enterprise · API</span>
+          </div>
+          <div class="v-grid">
+            <section>
+              <h5>Default — training off</h5>
+              <p>
+                <strong>Not</strong> used for training unless you opt in at
+                <a href="https://claude.ai/settings/data-privacy-controls"><code>…/data-privacy-controls</code></a>
+                — same toggle for Free, Pro, Max (not a paid/free split).
+                Team / Enterprise / API never trained on.  <strong>Always validate that "Help improve Claude" is disabled.</strong>
+                Retention: <strong>30&nbsp;days</strong> default, <strong>5&nbsp;years</strong> if opted in.
+                <strong>Keeping chat history ≠ training</strong> — they're separate settings.
+                Safety-flagged chats reviewed regardless; data processed in the <strong>US</strong>.
+              </p>
+            </section>
+            <section>
+              <h5>⚠ Claude Code (CLI)</h5>
+              <p>
+                Stores session transcripts in <strong>plaintext</strong> at
+                <code>~/.claude/projects/</code> for 30 days — anything you paste lives there too. Tune
+                with <code>cleanupPeriodDays</code>. Running <code>/feedback</code> uploads a transcript
+                (5y retention) <strong>and is used for training regardless of your opt-out</strong>;
+                disable with <code>DISABLE_FEEDBACK_COMMAND=1</code>.
+              </p>
+            </section>
+            <section>
+              <h5>⚠ claude.ai (web / app)</h5>
+              <p>
+                <strong>Memory</strong> (all plans): Settings → Capabilities →
+                <em>"Generate memory from chat history"</em>. Pause, reset, or view what's stored.
+                Memory inherits chat retention; Anthropic's docs don't explicitly address whether memory
+                entries themselves train models — assume in-scope if your training toggle is on.
+                <strong>Thumbs-up/down feedback</strong> on a reply uses that conversation for training
+                regardless of opt-out. <strong>Incognito chats</strong> (ghost icon) skip both memory and
+                training regardless of settings — use for ad-hoc sensitive questions.
+              </p>
+            </section>
+          </div>
+          <p class="iss-line">
+            <strong>ISS U1 ceiling on this plan — Low.</strong>
+            Medium use needs Anthropic's commercial / Enterprise terms + an Assessment of Use Case + ISS U9 / SR#26 review where necessary.
+          </p>
+          <div class="v-src">
+            <strong>Sources&nbsp;—</strong>
+            <span class="src"><a href="https://privacy.claude.com/en/articles/10023580-is-my-data-used-for-model-training">Is my data used for model training?</a> (Mar 2026)</span>
+            <span class="src"><a href="https://code.claude.com/docs/en/data-usage">Claude Code: Data Usage</a></span>
+            <span class="src"><a href="https://www.anthropic.com/legal/privacy">Anthropic Privacy Policy</a> (Jan 2026)</span>
+            <span class="src"><a href="https://www.anthropic.com/legal/commercial-terms">Anthropic Commercial Terms</a> (Jun 2025)</span>
+          </div>
+        </article>
+
+        <!-- GEMINI -->
+        <article class="vendor-card">
+          <div class="v-head">
+            <h4>Gemini · Gemini CLI</h4>
+            <span class="v-tag">Apps · CLI · Workspace · Vertex</span>
+          </div>
+          <div class="v-grid">
+            <section>
+              <h5>Default — varies by sign-in</h5>
+              <p>
+                Google does not provide a single global toggle. Whether your prompts are used for training
+                depends entirely on <strong>which account or API key you authenticated with</strong>. The
+                two columns to the right break it down.
+              </p>
+            </section>
+            <section>
+              <h5>⚠ Gemini Apps (web / mobile)</h5>
+              <p>
+                <strong>Personal accounts (default):</strong> with <strong>Keep Activity ON</strong>,
+                chats may be used to train models and a subset is reviewed by humans — toggle off in
+                account settings to stop both.
+                <strong>Workspace / school accounts:</strong> training off by default, no human review
+                without permission. Reviewed chats kept up to <strong>3 years</strong>;
+                <strong>72 hours</strong> minimum either way.
+              </p>
+            </section>
+            <section>
+              <h5>⚠ Gemini CLI &mdash; auth method matters</h5>
+              <p>
+                <strong>Trained on by default:</strong> personal Google account; free Gemini API key.
+                <strong>Personal account:</strong> disabling the CLI's <strong>Usage Statistics</strong>
+                setting stops prompt / code collection (it covers both telemetry and training data).
+                <strong>Free API key:</strong> training continues regardless — the Gemini API
+                Additional Terms govern data sent to the API endpoint and have no opt-out.
+                <strong>Not trained on:</strong> Workspace / Enterprise account, paid Gemini API, Vertex AI.
+              </p>
+            </section>
+          </div>
+          <p class="iss-line">
+            <strong>ISS U1 ceiling on this plan — Low.</strong>
+            Medium use needs Workspace / Enterprise auth or Vertex AI + an Assessment of Use Case + ISS U9 / SR#26 review where necessary.
+          </p>
+          <div class="v-src">
+            <strong>Sources&nbsp;—</strong>
+            <span class="src"><a href="https://support.google.com/gemini/answer/13594961">Gemini Apps Privacy Hub</a> (May 2026)</span>
+            <span class="src"><a href="https://google-gemini.github.io/gemini-cli/docs/tos-privacy.html">Gemini CLI ToS &amp; Privacy</a></span>
+            <span class="src"><a href="https://knowledge.workspace.google.com/admin/gemini/generative-ai-in-google-workspace-privacy-hub">Gen-AI in Workspace Privacy Hub</a></span>
+            <span class="src"><a href="https://docs.cloud.google.com/gemini/docs/discover/data-governance">Gemini for Google Cloud — Data Governance</a></span>
+          </div>
+        </article>
+
+        <!-- CHATGPT -->
+        <article class="vendor-card">
+          <div class="v-head">
+            <h4>ChatGPT · Codex</h4>
+            <span class="v-tag">Free · Plus · Pro · Team · Enterprise · Edu · API</span>
+          </div>
+          <div class="v-grid">
+            <section>
+              <h5>⚠ Default depends on plan</h5>
+              <p>
+                <strong>Free, Plus, Pro:</strong> training is <strong>ON by default</strong>. Turn it off at
+                Settings → Data Controls → <em>Improve the model for everyone</em>.
+                <strong>Team, Enterprise, Edu, API:</strong> training is <strong>OFF by default</strong>
+                (no toggle required). <strong>Caveat:</strong> submitting thumbs-up/down feedback on a chat
+                opts that entire conversation into training regardless of the toggle.
+              </p>
+            </section>
+            <section>
+              <h5>Temporary Chat</h5>
+              <p>
+                A per-conversation mode that's <strong>not used for training</strong> and
+                <strong>deleted after 30 days</strong>. Useful for one-off questions on a consumer
+                account when you can't easily switch tools — still sanitize identifiable info first.
+              </p>
+            </section>
+            <section>
+              <h5>⚠ Memory feature</h5>
+              <p>
+                Persists context (your facts, preferences) <strong>across all chats</strong>.
+                <strong>Memory and training are independent toggles</strong> — you can disable memory while
+                training stays on, or vice versa. Memory controls: Settings → Personalization → Memory
+                (clear, disable saving, disable reference). Memorized content is in scope for training
+                only if "Improve the model for everyone" is on.
+              </p>
+            </section>
+          </div>
+          <p class="iss-line">
+            <strong>ISS U1 ceiling on this plan — Low.</strong>
+            Medium use needs Team / Enterprise / Edu + an Assessment of Use Case + ISS U9 / SR#26 review where necessary.
+          </p>
+          <div class="v-src">
+            <strong>Sources&nbsp;—</strong>
+            <span class="src"><a href="https://help.openai.com/en/articles/7730893-data-controls-faq">Data Controls FAQ</a></span>
+            <span class="src"><a href="https://openai.com/policies/privacy-policy/">OpenAI Privacy Policy</a></span>
+            <span class="src"><a href="https://openai.com/enterprise-privacy/">OpenAI Enterprise Privacy</a></span>
+            <span class="src"><a href="https://help.openai.com/en/articles/8983130-what-if-i-want-to-keep-my-history-on-but-disable-model-training">Keep history on, disable training</a></span>
+          </div>
+        </article>
+
+      </div>
+    </section>
+
+    <footer>
+      <div class="rule-of-thumb">
+        <strong>Rule of thumb&nbsp;—</strong>
+        If it identifies a person or can't be shared publicly, don't put it in a consumer AI tool.
+      </div>
+      <div>
+        Questions? Ask in #ltic-genai-code · LT.hub@ubc.ca<br/>
+        UBC ISS · cio.ubc.ca/information-security-standards<br/>
+        UBC GenAI Principles · genai.ubc.ca/guidance<br/>
+        PIA Guidelines · privacymatters.ubc.ca/pia-stra/pia-guidelines-tools
+      </div>
+    </footer>
+
+  </main>
+</body>
+</html>
