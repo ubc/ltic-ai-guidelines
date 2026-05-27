@@ -189,27 +189,88 @@ flows — `gh auth login`, `gh auth refresh`, `gh auth logout` — still
 need to be run *outside* the sandbox, since write access to
 `~/.config/gh` is intentionally not granted.
 
+**`glab` (GitLab CLI).** Unlike `gh`, `glab` stores its token in a
+config file (`~/Library/Application Support/glab-cli`) rather than the
+Keychain, so no explicit injection step is needed — `glab` can read its
+own credentials directly. In denyall mode this path is explicitly
+`allowRead`'d; in allowall mode it is readable by default (not in the
+`denyRead` list). `glab api`, `glab mr`, `glab issue`, and other
+subcommands should work as-is. As an alternative to the config file,
+you can inject `GITLAB_TOKEN` in `_ccx_run` the same way `GH_TOKEN` is
+injected — `glab` reads it directly and it works regardless of whether
+the config path is accessible.
+
 ## Known gotchas
 
+Each item is labelled *(both)*, *(denyall)*, or *(allowall)* to indicate
+which config posture it affects.
+
 - **The OAuth token expires roughly every 8 hours and must be refreshed outside the sandbox.**
-  Claude Code's OAuth token has a ~8-hour lifetime. When it expires, Claude will fail to
+  *(both)* Claude Code's OAuth token has a ~8-hour lifetime. When it expires, Claude will fail to
   authenticate from inside the sandbox — the sandboxed process cannot reach the Keychain or
   complete the browser-based re-auth flow. **To refresh: exit the sandbox, run `claude` once
   in a normal terminal (it will silently re-auth against the Keychain), then relaunch with
   `ccx` or `ccx_permissive`.** The shell functions inject the token at sandbox startup, so a
   restart is required to pick up a newly refreshed credential.
 
-- **`gh auth login` from inside the sandbox fails.** Expected. Auth
-  outside, run gh inside.
-- **Tools that write directly to `/tmp/<not-claude>/...`** will hit
+- **All SSH operations are blocked — git over SSH, interactive `ssh` login, and `sftp`.**
+  *(both)* `denyReadAlways` includes `/**/id_*` (shared between both configs), which covers
+  every private key file (e.g. `~/.ssh/id_ed25519-github`). SSH needs to read the raw key
+  bytes for the initial handshake, so any SSH-based operation fails with EPERM.
+  There is no `!` escape from inside the sandbox. Two workarounds:
+
+  - **Option A — HTTPS + GH_TOKEN (GitHub only).** For `git push`/`git pull`, switch to
+    HTTPS and use `gh auth git-credential` as the credential helper (see next bullet).
+    Simpler and scopes the credential to GitHub HTTPS only.
+
+  - **Option B — SSH agent forwarding (any SSH target).** The SSH agent holds keys in
+    memory and exposes only a sign-once socket — clients authenticate through it without
+    reading raw key bytes. To enable: in `_ccx_run`, capture `$SSH_AUTH_SOCK` *outside*
+    the sandbox, add `allowRead` for that socket path (on macOS it's something like
+    `/private/tmp/com.apple.launchd.*/Listeners`), and pass the env var in.
+    Trade-off: Claude can authenticate as you to any SSH service reachable over the network,
+    but cannot exfiltrate the key material itself.
+
+  - **Option C — remove `/**/id_*` from `denyReadAlways`.** Gives Claude read access to
+    raw private key bytes. This allows key exfiltration over the network and is not
+    recommended unless the threat model explicitly accepts it.
+
+- **`git push`/`git pull` over HTTPS works with a one-time credential helper setup.**
+  *(both)* For GitHub, since `GH_TOKEN` is already injected (see *What the shell functions
+  do*), point git at `gh auth git-credential` and it will use the token directly — no
+  Keychain, no `~/.config/gh` access needed:
+  ```bash
+  # GitHub — one-time setup per repo
+  git remote set-url origin https://github.com/ORG/REPO.git
+  git config credential.helper '!gh auth git-credential'
+  ```
+  For GitLab, `glab`'s config is readable inside the sandbox (see *What the shell functions
+  do*), so the equivalent works without any extra token injection:
+  ```bash
+  # GitLab — one-time setup per repo
+  git remote set-url origin https://gitlab.com/ORG/REPO.git
+  git config credential.helper '!glab auth git-credential'
+  ```
+  After either setup, `git push` and `git pull` resolve credentials through the respective
+  CLI without touching the Keychain.
+
+- **`gh api`, `gh pr`, `gh issue`, and other `gh` subcommands work as-is.**
+  *(both)* The injected `$GH_TOKEN` is enough; no re-auth or keychain access is required.
+
+- **`gh auth login` from inside the sandbox fails.** *(both)* Neither config grants write
+  access to `~/.config/gh`. Auth outside, run `gh` inside.
+
+- **Tools that write directly to `/tmp/<not-claude>/...`** *(both)* will hit
   EPERM despite `/tmp` (canonically `/private/tmp`) being in
   `allowWrite`. Most CLIs respect `$TMPDIR` which `srt` overrides to
   `/tmp/claude`, so this is rare in practice.
-- **Bare `/tmp` in `allowWrite` is a no-op** in upstream `srt` — the
+
+- **Bare `/tmp` in `allowWrite` is a no-op** *(both)* in upstream `srt` — the
   symlink isn't resolved for subpath allows. The configs in this repo
   use `/private/tmp` to work around this. Tracked / could be a
   separate upstream patch.
-- **Concurrent `ccx` sessions are isolated** via per-PID
+
+- **Concurrent `ccx` sessions are isolated** *(both)* via per-PID
   `/tmp/claude/ccx-<pid>` TMPDIRs. No cleanup required — `/tmp` is
   wiped on reboot.
 
