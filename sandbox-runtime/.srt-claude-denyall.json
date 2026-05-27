@@ -35,6 +35,7 @@
       "~/.rustup",
       "~/.config/git",
       "~/.config/gh",
+      "~/Library/Application Support/glab-cli",
       "~/.gitconfig",
       "~/.ssh/config",
       "~/.ssh/known_hosts"
