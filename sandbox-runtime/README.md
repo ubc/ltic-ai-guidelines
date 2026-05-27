@@ -192,6 +192,14 @@ need to be run *outside* the sandbox, since write access to
 
 ## Known gotchas
 
+- **The OAuth token expires roughly every 8 hours and must be refreshed outside the sandbox.**
+  Claude Code's OAuth token has a ~8-hour lifetime. When it expires, Claude will fail to
+  authenticate from inside the sandbox — the sandboxed process cannot reach the Keychain or
+  complete the browser-based re-auth flow. **To refresh: exit the sandbox, run `claude` once
+  in a normal terminal (it will silently re-auth against the Keychain), then relaunch with
+  `ccx` or `ccx_permissive`.** The shell functions inject the token at sandbox startup, so a
+  restart is required to pick up a newly refreshed credential.
+
 - **`gh auth login` from inside the sandbox fails.** Expected. Auth
   outside, run gh inside.
 - **Tools that write directly to `/tmp/<not-claude>/...`** will hit
