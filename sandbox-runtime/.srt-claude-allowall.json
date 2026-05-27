@@ -37,15 +37,15 @@
       "~/Library/Messages",
       "~/Library/Containers/com.apple.iChat",
 
-      "**/.env*",
-      "**/*.pem",
-      "**/*.key",
-      "**/id_rsa*",
-      "**/id_ed25519*",
-      "**/credentials.json",
-      "**/credentials",
-      "**/secrets.yaml",
-      "**/secrets.yml",
+      "/**/.env*",
+      "/**/*.pem",
+      "/**/*.key",
+      "/**/id_rsa*",
+      "/**/id_ed25519*",
+      "/**/credentials.json",
+      "/**/credentials",
+      "/**/secrets.yaml",
+      "/**/secrets.yml",
 
       "~/.cisco",
       "~/.vpn",
@@ -74,7 +74,8 @@
     ],
     "denyWrite": [
       "~/.claude/settings.json",
-      "~/.claude/settings.local.json"
+      "~/.claude/settings.local.json",
+      "~/.claude/CLAUDE.md"
     ]
   },
   "enableWeakerNetworkIsolation": true,

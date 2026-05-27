@@ -5,9 +5,11 @@ Settings files and shell functions for running
 by [sandbox-runtime](https://github.com/anthropic-experimental/sandbox-runtime)
 — Anthropic's general-purpose process sandbox; `srt` is its CLI. These
 configs require a [patched
-fork](https://github.com/ubc/sandbox-runtime/tree/gs/allow-all-domains)
-that adds an `allowAllDomains` flag (see *Setup* for why). All web
-egress is allowed — filesystem restrictions are the primary boundary.
+fork](https://github.com/ubc/sandbox-runtime/tree/gs/deny-read-always)
+that adds two schema fields: `allowAllDomains` (drop the egress allowlist)
+and `denyReadAlways` (read denies that beat `allowRead`). See *Setup*
+for why each is needed. All web egress is allowed — filesystem
+restrictions are the primary boundary.
 
 ## Contents
 
@@ -45,11 +47,19 @@ generating too much friction.
 - **`deniedDomains: ["gist.github.com"]`** — explicit denies still take
   precedence over allow-all, closing one easy exfil channel via the
   general `github.com` reachability.
-- **`denyWrite`** for `~/.claude/settings.json` and
-  `~/.claude/settings.local.json` — closes a sandbox-escape: writes
-  there install Claude Code hooks that execute *outside* the sandbox on
-  the next Claude start. The auto-deny list in upstream `srt` does not
-  cover this file.
+- **`denyReadAlways`** (`/**/.env*`, `/**/credentials`, `/**/id_*`,
+  `/**/*.pem`, `/**/*.key`, etc.) — credential-style globs that deny
+  reads **everywhere**, including inside paths that `allowRead`
+  re-allows. Without this, an `.env` file inside an `allowRead`'d
+  directory like `~/src` would be readable. Requires the forked `srt`.
+  See *Glob anchoring* below for why these patterns start with `/`.
+- **`denyWrite`** for `~/.claude/settings.json`,
+  `~/.claude/settings.local.json`, and `~/.claude/CLAUDE.md` — closes
+  sandbox-escape / persistence vectors: writes to `settings.json`
+  install Claude Code hooks that execute *outside* the sandbox on the
+  next start; `CLAUDE.md` is user-level memory the next session reads
+  as authoritative. The auto-deny list in upstream `srt` does not
+  cover these files.
 - **`allowWrite`** uses `/private/tmp`, not `/tmp` — Seatbelt does not
   resolve the `/tmp → /private/tmp` symlink in `(subpath …)` allow
   rules, so a bare `/tmp` allow grants nothing. (`/tmp/claude` is
@@ -58,19 +68,42 @@ generating too much friction.
   Go binaries to use macOS trustd for TLS verification through the
   MITM proxy.
 
+#### Glob anchoring (gotcha)
+
+`srt`'s glob patterns are CWD-relative by default: a pattern like
+`**/.env*` gets normalized to `<cwd>/**/.env*` and only matches files
+under wherever Claude was launched from. To match globally, **start the
+pattern with a leading `/`** — `/**/.env*` resolves to the regex
+`^/(.*/)?\.env[^/]*$` and matches any `.env*` file anywhere on the
+filesystem. The configs in this repo use leading `/` for all global
+patterns.
+
 ## Setup
 
 ### 1. Install the patched `srt` from the fork
 
-Upstream `srt` does not allow `"*"` in the domain allowlist and has no
-flag to disable network filtering from a config file. Our fork adds an
-`allowAllDomains: true` schema field that short-circuits the allowlist
-**after** `deniedDomains` is checked.
+Upstream `srt` has two limitations these configs need to work around:
+
+1. **No "allow all egress" mode.** The schema rejects `"*"` in
+   `allowedDomains`, and there is no flag to disable network
+   filtering from a config file. Our fork adds an
+   `allowAllDomains: true` schema field that short-circuits the
+   allowlist **after** `deniedDomains` is checked.
+2. **`allowRead` unconditionally beats `denyRead`.** That means a
+   broad `allowRead` like `~/src` exposes every `.env` and credential
+   file inside, regardless of what you put in `denyRead`. Our fork
+   adds a third layer, `denyReadAlways`, that emits deny rules
+   **after** the allowRead rules so they win — letting credential
+   globs like `/**/.env*` actually do something inside an allowed
+   directory.
+
+The branch `gs/deny-read-always` contains both features (it stacks on
+`gs/allow-all-domains`):
 
 ```bash
 git clone https://github.com/ubc/sandbox-runtime.git
 cd sandbox-runtime
-git checkout gs/allow-all-domains
+git checkout gs/deny-read-always
 npm install           # fetch build deps
 npm build             # build dist/
 npm install -g .      # install srt globally (goes in nvm's node bin, already on $PATH)
@@ -96,9 +129,12 @@ srt --settings ~/.srt-claude-denyall.json -- \
 #                       so the connection was blocked at the proxy
 ```
 
-PR tracking the patch upstream:
-[anthropic-experimental/sandbox-runtime#283](https://github.com/anthropic-experimental/sandbox-runtime/pull/283).
-Once merged, you can skip the fork step and install the published
+PRs tracking the patches upstream:
+- [#283 — allowAllDomains](https://github.com/anthropic-experimental/sandbox-runtime/pull/283)
+- [#284 — denyReadAlways](https://github.com/anthropic-experimental/sandbox-runtime/pull/284)
+  (stacks on #283)
+
+Once both merge, you can skip the fork step and install the published
 package: `npm install -g @anthropic-ai/sandbox-runtime`.
 
 ### 2. Copy the config files into your home directory
@@ -187,6 +223,13 @@ there with a few tweaks to the settings files:
   redirect, so the macOS-only workaround isn't needed.
 - **Drop `enableWeakerNetworkIsolation` and `allowMachLookup`** — both
   are macOS-only and ignored on Linux.
+- **`denyReadAlways` works on Linux for literal paths and narrow globs
+  only.** Bubblewrap doesn't support regex/glob matching, so `srt`
+  expands globs to concrete paths at config-load time. A pattern like
+  `/**/.env*` (rooted at `/`) is rejected by the expander as "too
+  broad" and silently skipped with a warning. To get coverage under
+  the directories you care about, narrow the globs:
+  `~/src/**/.env*`, `~/projects/**/credentials`, etc.
 
 For the shell functions: the `security find-generic-password` block is
 macOS Keychain-specific. Claude Code on Linux stores credentials

@@ -39,6 +39,17 @@
       "~/.ssh/config",
       "~/.ssh/known_hosts"
     ],
+    "denyReadAlways": [
+      "/**/.env*",
+      "/**/*.pem",
+      "/**/*.key",
+      "/**/id_rsa*",
+      "/**/id_ed25519*",
+      "/**/credentials.json",
+      "/**/credentials",
+      "/**/secrets.yaml",
+      "/**/secrets.yml"
+    ],
     "allowWrite": [
       ".",
       "/private/tmp",
@@ -51,7 +62,8 @@
     ],
     "denyWrite": [
       "~/.claude/settings.json",
-      "~/.claude/settings.local.json"
+      "~/.claude/settings.local.json",
+      "~/.claude/CLAUDE.md"
     ]
   },
   "enableWeakerNetworkIsolation": true,
