@@ -73,25 +73,30 @@ npm build             # build dist/
 npm install -g .      # install srt globally (goes in nvm's node bin, already on $PATH)
 ```
 
-Verify the global `srt` resolves to the local checkout:
+Verify the install:
 
 ```bash
-which srt
-# → ~/Library/pnpm/bin/srt (or your pnpm bin dir)
+which srt          # → ~/.nvm/versions/node/<ver>/bin/srt
+srt --version      # → 1.0.0
+```
 
-realpath "$(which srt)"
-# pnpm shim — readable but not useful on its own
+(After step 2 below installs the config files) confirm the patched
+fork is actually what got installed — upstream stock `srt` will
+*silently drop* the unknown `allowAllDomains` key during schema
+validation, so the only reliable test is functional:
 
-# The real resolution:
-grep -o 'sandbox-runtime/dist/cli.js' "$(which srt)"
-ls -la $(grep -oE '/.*sandbox-runtime' "$(which srt)" | head -1)
-# Should symlink into your local clone.
+```bash
+srt --settings ~/.srt-claude-denyall.json -- \
+  curl -sI --max-time 5 https://example.com/ | head -1
+# HTTP/2 200 ...   → patched srt: allowAllDomains is honored
+# (no output / hang) → stock srt: example.com isn't in allowedDomains,
+#                       so the connection was blocked at the proxy
 ```
 
 PR tracking the patch upstream:
 [anthropic-experimental/sandbox-runtime#283](https://github.com/anthropic-experimental/sandbox-runtime/pull/283).
-Once merged, you can drop the fork step and install the published
-package: `pnpm install -g @anthropic-ai/sandbox-runtime`.
+Once merged, you can skip the fork step and install the published
+package: `npm install -g @anthropic-ai/sandbox-runtime`.
 
 ### 2. Copy the config files into your home directory
 
