@@ -1,0 +1,95 @@
+# Sandboxed Claude Code, scoped to cwd.
+# srt sets TMPDIR=/tmp/claude inside the sandbox automatically (see
+# sandbox-runtime src/sandbox/sandbox-utils.ts:320-325) and auto-allows
+# writes to /tmp/claude. Setting CLAUDE_CODE_TMPDIR here makes that
+# explicit and gives each invocation its own subdir so concurrent ccx
+# sessions don't trample each other's temp files.
+# Shared body for ccxd/ccx. The srt sandboxes deny ~/Library/Keychains, so
+# claude's in-process `security find-generic-password` returns exit 44 and the
+# OAuth token never loads. We extract the token out here (outside the sandbox),
+# stream it through a FIFO into the sandboxed shell, and have that shell open
+# the FIFO on FD 3 before exec'ing claude. claude picks it up via
+# CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR — the env var holds only an FD
+# number, and the token bytes never land on disk.
+function _ccx_run {
+  local settings="$1"; shift
+  local td="/tmp/claude/ccx-$$"
+  mkdir -p "$td"
+  chmod 700 "$td"
+
+  local cred_json token=""
+  cred_json=$(security find-generic-password -a "$USER" -w -s "Claude Code-credentials" 2>/dev/null)
+  if [[ -n "$cred_json" ]]; then
+    token=$(print -nr -- "$cred_json" | jq -r '.claudeAiOauth.accessToken // empty' 2>/dev/null)
+  fi
+
+  # gh stores its token in the macOS keychain, which the sandbox denies. Pull
+  # it out here so gh inside the sandbox can authenticate via $GH_TOKEN.
+  local gh_token=""
+  if command -v gh >/dev/null 2>&1; then
+    gh_token=$(gh auth token 2>/dev/null)
+  fi
+
+  if [[ -z "$token" ]]; then
+    # No keychain token — run unauthenticated.
+    CLAUDE_CODE_TMPDIR="$td" \
+    DISABLE_FEEDBACK_COMMAND=1 \
+    CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 \
+    GH_TOKEN="$gh_token" \
+      srt --settings "$settings" -- claude "$@"
+    return
+  fi
+
+  local fifo="$td/.token.fifo"
+  mkfifo -m 600 "$fifo"
+  # Background writer blocks at open() until the sandboxed reader connects,
+  # then writes the token and exits, closing the write end so claude sees EOF.
+  ( print -nr -- "$token" > "$fifo" ) &
+  local writer_pid=$!
+
+  CLAUDE_CODE_TMPDIR="$td" \
+  DISABLE_FEEDBACK_COMMAND=1 \
+  CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 \
+  GH_TOKEN="$gh_token" \
+    srt --settings "$settings" -- /bin/sh -c '
+      exec 3<"$1"; shift
+      CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR=3 exec claude "$@"
+    ' _ "$fifo" "$@"
+  local rc=$?
+
+  # If claude bailed before opening the FIFO, the writer is stuck at open() —
+  # kick it free so we don't leave a zombie.
+  kill -0 "$writer_pid" 2>/dev/null && kill "$writer_pid" 2>/dev/null
+  wait "$writer_pid" 2>/dev/null
+  rm -f "$fifo"
+  return $rc
+}
+
+function ccx { _ccx_run ~/.srt-claude-denyall.json "$@" }
+function ccx_permissive  { _ccx_run ~/.srt-claude-allowall.json "$@" }
+
+function srtlog {
+  local NOISE='ampdaemon|tccd|amfid|nsurlsessiond|cloudd|callservicesd|searchpartyuseragent|biomesyncd|knowledge-agent|appleaccountd|geod|locationd|mediaanalysisd|photoanalysisd|routined|trustd|symptomsd|networkserviceproxy|WebKit|sharingd|parsecd|imagent|identityservicesd|distnoted|UserEventAgent|coreduetd|contextstored|suggestd|powerd|bluetoothd'
+
+  if [[ "$1" =~ ^[0-9]+$ ]]; then
+    log show --style compact --last "${1}m" \
+      --predicate 'sender == "Sandbox" OR process == "sandbox-exec"' \
+      | grep -v -E "$NOISE"
+  else
+    log stream --style compact \
+      --predicate 'sender == "Sandbox" OR process == "sandbox-exec"' \
+      | grep --line-buffered -v -E "$NOISE"
+  fi
+}
+
+# ONLY needed if you installed srt with `pnpm install -g .` instead of npm.
+# pnpm puts its global binaries in a separate dir from nvm's node bin so
+# they survive nvm switching, but that dir isn't on $PATH by default.
+# `pnpm setup` writes this block automatically the first time you install
+# pnpm — if it's already in your shell config you don't need it here.
+#
+# export PNPM_HOME="$HOME/Library/pnpm"
+# case ":$PATH:" in
+#   *":$PNPM_HOME/bin:"*) ;;
+#   *) export PATH="$PNPM_HOME/bin:$PATH" ;;
+# esac

@@ -1,0 +1,82 @@
+{
+  "network": {
+    "allowedDomains": [],
+    "deniedDomains": [
+      "gist.github.com"
+    ],
+    "allowAllDomains": true,
+    "allowLocalBinding": false
+  },
+  "filesystem": {
+    "denyRead": [
+      "~/.ssh-vault",
+      "~/.aws-vault",
+      "~/.kube-vault",
+      "~/.gnupg",
+      "~/.netrc",
+
+      "~/.bash_history",
+      "~/.zsh_history",
+      "~/.viminfo",
+      "~/.lesshst",
+      "~/.python_history",
+
+      "~/.aws",
+      "~/.docker/config.json",
+      "~/.saml2aws",
+      "~/.npmrc",
+      "~/.config/github-copilot",
+
+      "~/Library/Keychains",
+      "~/Library/Cookies",
+      "~/Library/Application Support/Firefox",
+      "~/Library/Application Support/Google/Chrome",
+      "~/Library/Application Support/Slack",
+      "~/Library/Application Support/Signal",
+      "~/Library/Mail",
+      "~/Library/Messages",
+      "~/Library/Containers/com.apple.iChat",
+
+      "**/.env*",
+      "**/*.pem",
+      "**/*.key",
+      "**/id_rsa*",
+      "**/id_ed25519*",
+      "**/credentials.json",
+      "**/credentials",
+      "**/secrets.yaml",
+      "**/secrets.yml",
+
+      "~/.cisco",
+      "~/.vpn",
+      "~/OneDrive - UBC/",
+      "~/Documents",
+      "~/Desktop",
+      "~/Downloads",
+
+      "/Volumes",
+      "/cores",
+      "/opt/cisco",
+      "/private/var/folders",
+      "/etc/openldap",
+      "/etc/krb5.conf",
+      "/private/var/log/jamf.log"
+    ],
+    "allowWrite": [
+      ".",
+      "/private/tmp",
+      "~/.claude",
+      "~/.cache",
+      "~/.npm",
+      "~/.claude.json",
+      "~/.claude.json.lock",
+      "~/.local/state/claude"
+    ],
+    "denyWrite": [
+      "~/.claude/settings.json",
+      "~/.claude/settings.local.json"
+    ]
+  },
+  "enableWeakerNetworkIsolation": true,
+  "allowPty": true
+}

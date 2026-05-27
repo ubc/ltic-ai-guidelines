@@ -1,0 +1,59 @@
+{
+  "network": {
+    "allowedDomains": [],
+    "deniedDomains": [
+      "gist.github.com"
+    ],
+    "allowAllDomains": true,
+    "allowLocalBinding": false
+  },
+  "filesystem": {
+    "denyRead": [
+      "/Users",
+      "/Volumes",
+      "/cores",
+      "/opt/cisco",
+      "/etc/openldap",
+      "/etc/krb5.conf",
+      "/private/var/log/jamf.log",
+      "/private/var/folders"
+    ],
+    "allowRead": [
+      ".",
+      "~/src",
+      "~/ltic",
+      "~/.claude",
+      "~/.claude.json",
+      "~/.claude.json.lock",
+      "~/.local",
+      "~/bin",
+      "~/.cache",
+      "~/.npm",
+      "~/.npmrc",
+      "~/.nvm",
+      "~/.cargo",
+      "~/.rustup",
+      "~/.config/git",
+      "~/.config/gh",
+      "~/.gitconfig",
+      "~/.ssh/config",
+      "~/.ssh/known_hosts"
+    ],
+    "allowWrite": [
+      ".",
+      "/private/tmp",
+      "~/.claude",
+      "~/.cache",
+      "~/.npm",
+      "~/.claude.json",
+      "~/.claude.json.lock",
+      "~/.local/state/claude"
+    ],
+    "denyWrite": [
+      "~/.claude/settings.json",
+      "~/.claude/settings.local.json"
+    ]
+  },
+  "enableWeakerNetworkIsolation": true,
+  "allowPty": true
+}
