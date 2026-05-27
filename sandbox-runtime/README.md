@@ -1,10 +1,13 @@
 # Sandboxed Claude Code on macOS
 
-Two `srt` settings files and matching shell functions for running
-[Claude Code](https://claude.com/claude-code) inside
-[sandbox-runtime](https://github.com/anthropic-experimental/sandbox-runtime)
-(`srt`) on macOS. All web egress is allowed — filesystem restrictions
-are the primary boundary.
+Settings files and shell functions for running
+[Claude Code](https://claude.com/claude-code) inside a sandbox provided
+by [sandbox-runtime](https://github.com/anthropic-experimental/sandbox-runtime)
+— Anthropic's general-purpose process sandbox; `srt` is its CLI. These
+configs require a [patched
+fork](https://github.com/ubc/sandbox-runtime/tree/gs/allow-all-domains)
+that adds an `allowAllDomains` flag (see *Setup* for why). All web
+egress is allowed — filesystem restrictions are the primary boundary.
 
 ## Contents
 
