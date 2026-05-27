@@ -5,7 +5,7 @@ Settings files and shell functions for running
 by [sandbox-runtime](https://github.com/anthropic-experimental/sandbox-runtime)
 — Anthropic's general-purpose process sandbox; `srt` is its CLI. These
 configs require a [patched
-fork](https://github.com/ubc/sandbox-runtime/tree/gs/deny-read-always)
+fork](https://github.com/ubc/sandbox-runtime/tree/ltic-main)
 that adds two schema fields: `allowAllDomains` (drop the egress allowlist)
 and `denyReadAlways` (read denies that beat `allowRead`). See *Setup*
 for why each is needed. All web egress is allowed — filesystem
@@ -97,13 +97,12 @@ Upstream `srt` has two limitations these configs need to work around:
    globs like `/**/.env*` actually do something inside an allowed
    directory.
 
-The branch `gs/deny-read-always` contains both features (it stacks on
-`gs/allow-all-domains`):
+The branch `ltic-main` contains both features merged on top of upstream main (tracks PRs #283 and #284):
 
 ```bash
 git clone https://github.com/ubc/sandbox-runtime.git
 cd sandbox-runtime
-git checkout gs/deny-read-always
+git checkout ltic-main
 npm install           # fetch build deps
 npm build             # build dist/
 npm install -g .      # install srt globally (goes in nvm's node bin, already on $PATH)
