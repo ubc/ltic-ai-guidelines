@@ -173,13 +173,52 @@ the sandbox fails with EPERM and you want to know why.
 
 Two non-obvious things `_ccx_run` handles:
 
-**Claude OAuth token plumbing.** Claude Code's OAuth token lives in the
-macOS Keychain. The sandbox denies `~/Library/Keychains`, so Claude
-can't read its own credentials from inside. The function reads the
-token *outside* the sandbox, pipes it through a named FIFO into the
-sandboxed shell on file descriptor 3, and Claude picks it up via the
-`CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR` env var. The token bytes
-never touch disk.
+**Claude OAuth credential plumbing.** Claude Code's OAuth credential
+lives in the macOS Keychain. The sandbox denies `~/Library/Keychains`,
+so Claude can't read its own credentials from inside. Claude Code has a
+two-tier credential store (`fallbackStorage`): it tries the Keychain
+first and falls back to a file, `~/.claude/.credentials.json`, when the
+Keychain read fails — which is exactly what happens inside the sandbox.
+The function seeds that file from the Keychain *outside* the sandbox so
+Claude finds it on the fallback path.
+
+Why a file instead of the old file-descriptor trick: the FD mechanism
+(`CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR`) injects only a bare access
+token, and Claude Code hardcodes `subscriptionType: null` for that path.
+A null subscription type degrades the defaults — Sonnet instead of Opus
+for Max subscribers, and one plan-mode agent instead of three. The file
+store carries the full credential JSON (including `subscriptionType` and
+`rateLimitTier`), so Claude reads the correct tier and picks the right
+model and agent count.
+
+**The refresh token is nulled before the file is written.** The
+short-lived (~8h) access token is enough for a session; stripping the
+refresh token means the sandbox can never refresh, which is deliberate:
+
+1. The long-lived refresh token never touches disk — only the access
+   token does, and only for the life of the session.
+2. Because the sandbox never refreshes, it never rotates the backend
+   refresh token (the refresh-token grant returns a new one each time),
+   so the Keychain stays valid and authoritative — **no drift.**
+
+When the access token expires, the session simply stops authenticating;
+refresh it the normal way (see the token-expiry gotcha below). The file
+is seeded on **every launch** (overwrite), because without in-sandbox
+refresh it can't renew itself — the Keychain is the source of truth and
+the file is just a per-launch snapshot. There is no cleanup-on-exit:
+Claude re-reads the credential store mid-session, so removing the file
+could yank it out from under a concurrent `ccx`; a stale expired token
+sitting between sessions is harmless and gets overwritten on the next
+launch.
+
+**Security tradeoff (deliberate).** The access token now lands on disk
+at `~/.claude/.credentials.json` (mode 600) for the life of the session,
+rather than streaming through a pipe and never touching disk (the old
+FIFO/FD design). The refresh token does **not** — it is nulled out. The
+file is readable inside the sandbox only because, being a dotfile, it
+escapes the `/**/credentials.json` deny glob (see *Glob anchoring* — the
+leading `.` means the pattern doesn't match, so this is fragile:
+tightening that pattern would lock Claude out of its own credentials).
 
 **`gh` token injection.** `gh` also stores its token in the Keychain.
 The function extracts it via `gh auth token` outside the sandbox and
@@ -205,13 +244,23 @@ the config path is accessible.
 Each item is labelled *(both)*, *(denyall)*, or *(allowall)* to indicate
 which config posture it affects.
 
-- **The OAuth token expires roughly every 8 hours and must be refreshed outside the sandbox.**
-  *(both)* Claude Code's OAuth token has a ~8-hour lifetime. When it expires, Claude will fail to
-  authenticate from inside the sandbox — the sandboxed process cannot reach the Keychain or
-  complete the browser-based re-auth flow. **To refresh: exit the sandbox, run `claude` once
-  in a normal terminal (it will silently re-auth against the Keychain), then relaunch with
-  `ccx` or `ccx_permissive`.** The shell functions inject the token at sandbox startup, so a
-  restart is required to pick up a newly refreshed credential.
+- **The access token expires roughly every 8 hours and must be refreshed outside the sandbox.**
+  *(both)* Claude Code's access token has a ~8-hour lifetime, and the shell functions null the
+  refresh token before seeding the file, so the sandbox cannot refresh on its own. When the
+  token expires, Claude fails to authenticate from inside the sandbox — the sandboxed process
+  cannot reach the Keychain or complete the browser-based re-auth flow. **To refresh: exit the
+  sandbox, run `claude` once in a normal terminal (it silently re-auths against the Keychain),
+  then relaunch with `ccx` or `ccx_permissive`.** Each launch re-seeds the file from the
+  Keychain, so the restart picks up the freshly refreshed credential. Because the sandbox never
+  refreshes, it never rotates the Keychain's refresh token — the Keychain stays authoritative and
+  this outside-refresh loop keeps working indefinitely.
+
+- **The access token lands on disk for the session; the refresh token does not.** *(both)* The
+  seeded `~/.claude/.credentials.json` (mode 600) holds the short-lived access token but has its
+  `refreshToken` nulled, so the long-lived credential never touches disk — a deliberate weakening
+  of the old FIFO/FD "nothing on disk" property, scoped to the throwaway token. The file survives
+  the `denyReadAlways` globs only because it is a dotfile (`/**/credentials.json` does not match
+  `.credentials.json`) — fragile, see *Glob anchoring*.
 
 - **All SSH operations are blocked — git over SSH, interactive `ssh` login, and `sftp`.**
   *(both)* `denyReadAlways` includes `/**/id_*` (shared between both configs), which covers

@@ -4,24 +4,45 @@
 # writes to /tmp/claude. Setting CLAUDE_CODE_TMPDIR here makes that
 # explicit and gives each invocation its own subdir so concurrent ccx
 # sessions don't trample each other's temp files.
-# Shared body for ccxd/ccx. The srt sandboxes deny ~/Library/Keychains, so
-# claude's in-process `security find-generic-password` returns exit 44 and the
-# OAuth token never loads. We extract the token out here (outside the sandbox),
-# stream it through a FIFO into the sandboxed shell, and have that shell open
-# the FIFO on FD 3 before exec'ing claude. claude picks it up via
-# CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR — the env var holds only an FD
-# number, and the token bytes never land on disk.
+# Shared body for ccx/ccx_permissive. The srt sandboxes deny
+# ~/Library/Keychains, so claude's in-process `security find-generic-password`
+# returns exit 44 and the keychain credential store is unreadable inside the
+# sandbox. We seed claude's file-based credential store
+# (~/.claude/.credentials.json) from the keychain out here, and claude falls
+# back to it when the keychain read fails (fallbackStorage tries keychain
+# first, file second). Unlike the old bare-token FD injection this carries the
+# FULL credential — including subscriptionType/rateLimitTier — so claude picks
+# the right default model and plan-mode agent count instead of degrading to the
+# non-subscriber defaults the FD path forced (it hardcoded subscriptionType:null).
+#
+# We null the refreshToken before writing. The short-lived (~8h) access token
+# is enough for a session; without a refresh token the sandbox can never
+# refresh, which is deliberate on two counts:
+#   1. The long-lived refresh token never touches disk — only the access token
+#      does, and only for the life of the session.
+#   2. Because the sandbox never refreshes, it never rotates the backend refresh
+#      token, so the keychain stays valid and authoritative. No drift.
+# When the access token expires, the session stops authenticating. Refresh it
+# the normal way: exit, run `claude` once outside the sandbox (it refreshes
+# silently against the keychain), then relaunch — which re-seeds the file from
+# the now-fresh keychain.
+#
+# Seed on EVERY launch (overwrite). With no in-sandbox refresh the file can't
+# renew itself, so the keychain is the source of truth and the file is just a
+# per-launch snapshot of it. Seeding once would leave a stale, expired token.
+#
+# Concurrency: all ccx sessions share this one path and converge on the same
+# keychain token, so the overwrite is a no-op in the common case. The write is
+# atomic (temp file + rename) because claude re-reads the credential store
+# mid-session — a plain `> file` truncates in place and a concurrent claude
+# could read a half-written file. No cleanup-on-exit for the same reason: an
+# rm could yank the file out from under a running session, and a stale expired
+# token left between sessions is harmless (overwritten next launch).
 function _ccx_run {
   local settings="$1"; shift
   local td="/tmp/claude/ccx-$$"
   mkdir -p "$td"
   chmod 700 "$td"
-
-  local cred_json token=""
-  cred_json=$(security find-generic-password -a "$USER" -w -s "Claude Code-credentials" 2>/dev/null)
-  if [[ -n "$cred_json" ]]; then
-    token=$(print -nr -- "$cred_json" | jq -r '.claudeAiOauth.accessToken // empty' 2>/dev/null)
-  fi
 
   # gh stores its token in the macOS keychain, which the sandbox denies. Pull
   # it out here so gh inside the sandbox can authenticate via $GH_TOKEN.
@@ -30,39 +51,27 @@ function _ccx_run {
     gh_token=$(gh auth token 2>/dev/null)
   fi
 
-  if [[ -z "$token" ]]; then
-    # No keychain token — run unauthenticated.
-    CLAUDE_CODE_TMPDIR="$td" \
-    DISABLE_FEEDBACK_COMMAND=1 \
-    CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 \
-    GH_TOKEN="$gh_token" \
-      srt --settings "$settings" -- claude "$@"
-    return
+  # A pure file-store user (no keychain entry) is left untouched: empty
+  # cred_json skips the write. $$-suffixed temp keeps concurrent launches from
+  # colliding on the scratch file; umask 077 closes the perms window so the
+  # token is never briefly world-readable.
+  local creds="$HOME/.claude/.credentials.json"
+  local cred_json=""
+  cred_json=$(security find-generic-password -a "$USER" -w -s "Claude Code-credentials" 2>/dev/null)
+  if [[ -n "$cred_json" ]]; then
+    local tmp="$creds.tmp.$$"
+    if print -nr -- "$cred_json" | (umask 077; jq -c '.claudeAiOauth.refreshToken = null' > "$tmp"); then
+      mv -f "$tmp" "$creds"
+    else
+      rm -f "$tmp"
+    fi
   fi
-
-  local fifo="$td/.token.fifo"
-  mkfifo -m 600 "$fifo"
-  # Background writer blocks at open() until the sandboxed reader connects,
-  # then writes the token and exits, closing the write end so claude sees EOF.
-  ( print -nr -- "$token" > "$fifo" ) &
-  local writer_pid=$!
 
   CLAUDE_CODE_TMPDIR="$td" \
   DISABLE_FEEDBACK_COMMAND=1 \
   CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 \
   GH_TOKEN="$gh_token" \
-    srt --settings "$settings" -- /bin/sh -c '
-      exec 3<"$1"; shift
-      CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR=3 exec claude "$@"
-    ' _ "$fifo" "$@"
-  local rc=$?
-
-  # If claude bailed before opening the FIFO, the writer is stuck at open() —
-  # kick it free so we don't leave a zombie.
-  kill -0 "$writer_pid" 2>/dev/null && kill "$writer_pid" 2>/dev/null
-  wait "$writer_pid" 2>/dev/null
-  rm -f "$fifo"
-  return $rc
+    srt --settings "$settings" -- claude "$@"
 }
 
 function ccx { _ccx_run ~/.srt-claude-denyall.json "$@" }
