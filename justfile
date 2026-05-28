@@ -19,7 +19,7 @@ open:
 preview:
     "{{chrome}}" \
       --headless=new --disable-gpu --hide-scrollbars \
-      --force-device-scale-factor=1.5 --window-size=900,1850 \
+      --force-device-scale-factor=1.5 --window-size=900,2000 \
       --screenshot="{{dir}}/ltic-ai-guidelines.png" \
       "file://{{dir}}/ltic-ai-guidelines.html"
     @echo "ltic-ai-guidelines.png updated"
