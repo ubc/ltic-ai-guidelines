@@ -13,15 +13,6 @@ Keep these references current if Prism updates the framework.
 
 ![Preview of the one-page policy](ltic-ai-guidelines.png)
 
-## View it in your browser
-
-This repo is private, so external rendering services won't work. To view:
-
-1. Clone the repo: `git clone git@github.com:smolyn/ai_policy.git`
-2. Open `ltic-ai-guidelines.html` in any browser (double-click works on macOS)
-
-The page prints to two 8.5×11 sheets (File → Print).
-
 ## Edit
 
 Everything lives in [`ltic-ai-guidelines.html`](ltic-ai-guidelines.html) — single self-contained file, no
