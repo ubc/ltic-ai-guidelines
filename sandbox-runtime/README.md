@@ -104,7 +104,7 @@ git clone https://github.com/ubc/sandbox-runtime.git
 cd sandbox-runtime
 git checkout ltic-main
 npm install           # fetch build deps
-npm build             # build dist/
+npm run build         # build dist/
 npm install -g .      # install srt globally (goes in nvm's node bin, already on $PATH)
 ```
 
@@ -156,6 +156,20 @@ cat .bashrc.example >> ~/.bash_profile
 ```
 
 Then `source ~/.zshrc` (or open a new terminal).
+
+**other shells**
+
+One option is to reuse the existing bashrc example, but wrap it in some entrypoint scripts.
+
+e.g.
+```bash
+cp .bashrc.example ~/.claude-sandbox.bash
+
+printf '#!/usr/bin/env bash\n source ~/.claude-sandbox.bash\n ccx "$@"\n' > ~/.local/bin/ccx
+printf '#!/usr/bin/env bash\n source ~/.claude-sandbox.bash\n ccx_permissive "$@"\n' > ~/.local/bin/ccx_permissive
+printf '#!/usr/bin/env bash\n source ~/.claude-sandbox.bash\n srtlog "$@"\n' > ~/.local/bin/srtlog
+chmod +x ~/.local/bin/ccx ~/.local/bin/ccx_permissive ~/.local/bin/srtlog
+```
 
 ### 4. Use it
 
