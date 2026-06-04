@@ -70,7 +70,8 @@
       "~/.npm",
       "~/.claude.json",
       "~/.claude.json.lock",
-      "~/.local/state/claude"
+      "~/.local/state/claude",
+      "~/.local/share/uv"
     ],
     "denyWrite": [
       "~/.claude/settings.json",
