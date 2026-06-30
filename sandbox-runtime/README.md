@@ -112,13 +112,20 @@ Verify the install:
 
 ```bash
 which srt          # → ~/.nvm/versions/node/<ver>/bin/srt
-srt --version      # → 1.0.0
+srt --version      # → 0.0.62-ltic.1   (the -ltic suffix confirms the patched fork)
 ```
 
-(After step 2 below installs the config files) confirm the patched
-fork is actually what got installed — upstream stock `srt` will
-*silently drop* the unknown `allowAllDomains` key during schema
-validation, so the only reliable test is functional:
+The `-ltic.N` suffix is the quick check that you're on the patched
+fork and not upstream `srt`: the `ltic-main` branch stamps a
+distinctive version and reads it from `package.json` at runtime, so
+`srt --version` is a reliable build identifier. Upstream stock `srt`
+reports a plain version with no `-ltic` suffix.
+
+For defense-in-depth (or if you're on an older build before the
+version stamp), confirm functionally that `allowAllDomains` is
+honored — upstream stock `srt` *silently drops* the unknown
+`allowAllDomains` key during schema validation (requires the config
+files from step 2 below):
 
 ```bash
 srt --settings ~/.srt-claude-denyall.json -- \
