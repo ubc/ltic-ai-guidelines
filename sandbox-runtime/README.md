@@ -7,7 +7,9 @@ by [sandbox-runtime](https://github.com/anthropic-experimental/sandbox-runtime)
 configs require a [patched
 fork](https://github.com/ubc/sandbox-runtime/tree/ltic-main)
 that adds two schema fields: `allowAllDomains` (drop the egress allowlist)
-and `denyReadAlways` (read denies that beat `allowRead`). See *Setup*
+and `denyReadAlways` (glob read-denies that beat `allowRead` — upstream
+already lets *literal* nested denies win as of PR #311, but not globs).
+See *Setup*
 for why each is needed. All web egress is allowed — filesystem
 restrictions are the primary boundary.
 
@@ -48,11 +50,14 @@ generating too much friction.
   precedence over allow-all, closing one easy exfil channel via the
   general `github.com` reachability.
 - **`denyReadAlways`** (`/**/.env*`, `/**/credentials`, `/**/id_*`,
-  `/**/*.pem`, `/**/*.key`, etc.) — credential-style globs that deny
+  `/**/*.pem`, `/**/*.key`, etc.) — credential-style **globs** that deny
   reads **everywhere**, including inside paths that `allowRead`
   re-allows. Without this, an `.env` file inside an `allowRead`'d
-  directory like `~/src` would be readable. Requires the forked `srt`.
-  See *Glob anchoring* below for why these patterns start with `/`.
+  directory like `~/src` would be readable. (Stock `srt` re-emits
+  *literal* nested denies since PR #311, but not glob denies — so this
+  fork field is specifically the glob lever.) Requires the forked
+  `srt`. See *Glob anchoring* below for why these patterns start with
+  `/`.
 - **`denyWrite`** for `~/.claude/settings.json`,
   `~/.claude/settings.local.json`, and `~/.claude/CLAUDE.md` — closes
   sandbox-escape / persistence vectors: writes to `settings.json`
@@ -66,7 +71,21 @@ generating too much friction.
   always granted by `srt` itself regardless.)
 - **`enableWeakerNetworkIsolation: true`** — needed for `gh` and other
   Go binaries to use macOS trustd for TLS verification through the
-  MITM proxy.
+  MITM proxy. Still required as of `srt 0.0.62-ltic.1`: with it set to
+  `false`, `gh api` fails the TLS handshake (`x509: OSStatus -26276`).
+  The newer TLS-proxy hardening (SKI/AKI leaf extensions, gcloud/Nix CA
+  env injection) did **not** remove the need for this on macOS.
+
+#### Escape hatch for mTLS / cert-pinned hosts
+
+If a specific host breaks under the MITM proxy because it pins certs or
+requires mutual TLS, upstream `srt` now supports
+`network.tlsTerminate.excludeDomains` — a per-host list that skips MITM
+termination for those domains (added in
+[#344](https://github.com/anthropic-experimental/sandbox-runtime/pull/344)).
+Prefer adding the offending host there over weakening isolation
+globally. The configs here don't set it (no known offender); add a
+`tlsTerminate` block only if you hit a pinned/mTLS host.
 
 #### Glob anchoring (gotcha)
 
@@ -89,13 +108,18 @@ Upstream `srt` has two limitations these configs need to work around:
    filtering from a config file. Our fork adds an
    `allowAllDomains: true` schema field that short-circuits the
    allowlist **after** `deniedDomains` is checked.
-2. **`allowRead` unconditionally beats `denyRead`.** That means a
-   broad `allowRead` like `~/src` exposes every `.env` and credential
-   file inside, regardless of what you put in `denyRead`. Our fork
-   adds a third layer, `denyReadAlways`, that emits deny rules
-   **after** the allowRead rules so they win — letting credential
-   globs like `/**/.env*` actually do something inside an allowed
-   directory.
+2. **A *glob* `denyRead` inside an `allowRead` region is ignored.**
+   Upstream [PR #311](https://github.com/anthropic-experimental/sandbox-runtime/pull/311)
+   fixed the *literal* case — a literal path in `denyRead` nested under
+   an `allowRead` subtree is now re-emitted after the allow rules and
+   wins. But upstream deliberately does **not** re-emit *glob* denies
+   (the regex-vs-subpath nesting isn't decidable at rule-generation
+   time — see the comment in `generateReadRules`), so a credential glob
+   like `/**/.env*` inside a broad `allowRead` like `~/src` still does
+   nothing on stock `srt`. Our fork adds a third layer,
+   `denyReadAlways`, that emits glob deny rules **after** the allowRead
+   rules so they win — letting credential globs like `/**/.env*`
+   actually take effect inside an allowed directory.
 
 The branch `ltic-main` contains both features merged on top of upstream main (tracks PRs #283 and #284):
 
@@ -283,6 +307,21 @@ which config posture it affects.
   the `denyReadAlways` globs only because it is a dotfile (`/**/credentials.json` does not match
   `.credentials.json`) — fragile, see *Glob anchoring*.
 
+- **Non-secret `.pem` / `.key` files are blocked too.** *(both)* The
+  `/**/*.pem` and `/**/*.key` globs deny *every* file with those
+  extensions anywhere — which catches legitimate non-secret files:
+  test fixtures, vendored CA bundles, public certs, and certs under
+  `node_modules`. This can break builds or test suites that read such a
+  file (it fails with EPERM). This is deliberate: egress is allow-all,
+  so a readable private key is a direct exfil path, and most private
+  keys *do* use these extensions. The breadth is the cost of that
+  coverage. Workaround when a build needs a specific non-secret
+  `.pem`/`.key`: copy it to a path that doesn't match the glob (e.g.
+  rename to `.crt`/`.cert`, or stage it under the project as
+  `cert.pem.txt`) and point the tool there; or, if you accept the
+  weaker posture for a session, drop the two globs from
+  `denyReadAlways` (denyall) / `denyRead` (allowall).
+
 - **All SSH operations are blocked — git over SSH, interactive `ssh` login, and `sftp`.**
   *(both)* `denyReadAlways` includes `/**/id_*` (shared between both configs), which covers
   every private key file (e.g. `~/.ssh/id_ed25519-github`). SSH needs to read the raw key
@@ -343,6 +382,16 @@ which config posture it affects.
 - **Concurrent `ccx` sessions are isolated** *(both)* via per-PID
   `/tmp/claude/ccx-<pid>` TMPDIRs. No cleanup required — `/tmp` is
   wiped on reboot.
+
+- **`*.local` hostnames now route through the MITM proxy.** *(both)*
+  As of [#349](https://github.com/anthropic-experimental/sandbox-runtime/pull/349),
+  `srt` drops `.local` from `NO_PROXY`, so mDNS/Bonjour names and
+  local-network devices go through the proxy and are subject to the
+  domain allow/deny rules like any other host. With `allowAllDomains:
+  true` they remain reachable, but if you ever switch to an explicit
+  allowlist, remember to account for any `.local` targets. Purely
+  informational unless you rely on local devices/mDNS from inside the
+  sandbox.
 
 ## Using on Linux
 
@@ -406,6 +455,20 @@ needed and is additive — existing configs are unaffected.
 `srt` has primitives this config doesn't exercise yet. Worth exploring
 if/when the current posture isn't enough:
 
+- **Native `credentials` masking block.** Upstream `srt` now ships a
+  first-class `credentials` config block (`files` / `envVars`, each with
+  `mode: deny | mask`, optional `extract` regex, and per-entry
+  `injectHosts`). For *file* denies on macOS it's equivalent to what
+  `denyReadAlways` already does (Seatbelt can't redirect reads, so
+  `mask` degrades to `deny`), and it takes explicit paths rather than
+  broad globs — so it's **not** a drop-in replacement for the
+  credential globs here. Where it adds something this config can't do is
+  **env-var masking**: substitute a sentinel for a real token in the
+  environment and only swap the real value back on egress to specific
+  `injectHosts` (requires `network.tlsTerminate`). Gotcha: the
+  `credentials.*` sub-schema is `.strict()` — an unknown key under it is
+  a hard load error (unlike top-level/network/filesystem keys, which are
+  silently stripped).
 - **URL/path-level filtering.** Allow/deny today is host-only. `srt`'s
   MITM TLS termination layer (`src/sandbox/tls-terminate-proxy.ts`)
   sees full request URLs, so a future schema could block on path
