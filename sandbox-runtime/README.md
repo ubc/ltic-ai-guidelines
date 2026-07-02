@@ -369,6 +369,42 @@ which config posture it affects.
 - **`gh auth login` from inside the sandbox fails.** *(both)* Neither config grants write
   access to `~/.config/gh`. Auth outside, run `gh` inside.
 
+- **Copying to the system clipboard works only in an OSC 52-capable terminal; Apple
+  Terminal.app silently drops the copy.** *(both)* This appears to surface only with Claude
+  Code's **fullscreen mode** (the mouse-selection / copy-to-clipboard rendering path, e.g. under
+  `CLAUDE_CODE_NO_FLICKER=1`) — that's where the in-app copy action runs. When you copy inside
+  Claude Code (the copy-to-clipboard / "cut" action), Claude does two things at once: it shells
+  out to `pbcopy`
+  **and** it emits an OSC 52 clipboard escape sequence (`ESC]52;c;<base64>`) to the terminal.
+  Inside the sandbox the `pbcopy` half is dead — `pbcopy` talks to the macOS pasteboard over the
+  `com.apple.pasteboard` Mach service, and the Seatbelt profile `srt` generates is default-deny
+  for Mach lookups and does not allow-list it (nor do these configs set `allowMachLookup`). So
+  the copy only actually lands on the clipboard if the **terminal** honors the OSC 52 sequence:
+
+  - **OSC 52-capable terminals — works, no sandbox change needed.** The terminal itself puts the
+    text on the clipboard when it sees the escape sequence, entirely outside the sandbox; the
+    sandboxed `pbcopy` failing in the background is harmless. **Ghostty** supports OSC 52 out of
+    the box. So do **WezTerm**, **kitty**, and **Alacritty**. **iTerm2** supports it but it is
+    **off by default** — enable *Settings → General → Selection → "Applications in terminal may
+    access the clipboard"*. (Pasting *into* Claude with ⌘V is a terminal bracketed-paste and
+    works everywhere regardless of the sandbox; only clipboard *reads* such as image-paste stay
+    blocked.)
+
+  - **Apple Terminal.app — the copy is silently lost.** Terminal.app has no OSC 52 support, so
+    the escape sequence is ignored and, with `pbcopy` blocked by the sandbox, the copy never
+    reaches the system clipboard. (Run outside the sandbox it "works" only because `pbcopy` runs
+    unrestricted.)
+
+  - **Workaround for Terminal.app — [`osc52pty`](https://github.com/roy2220/osc52pty).** It
+    wraps a program in a PTY, watches its output for OSC 52 sequences, and runs `pbcopy` itself
+    when it sees one — effectively teaching Terminal.app OSC 52. The critical requirement is that
+    it must run **outside** the sandbox, wrapping the whole `ccx`/`srt` invocation, so its own
+    `pbcopy` is unrestricted: e.g. run `osc52pty zsh` and use `ccx` inside it, or edit `_ccx_run`
+    to launch `osc52pty srt --settings … -- claude …`. This keeps the sandbox fully tight — no
+    pasteboard access is granted *inside* it; the clipboard write happens entirely outside. It is
+    write-only (copy out), which is the direction the sandbox otherwise breaks. Simplest fix if
+    you're flexible on terminal: just use an OSC 52-capable terminal like Ghostty.
+
 - **Tools that write directly to `/tmp/<not-claude>/...`** *(both)* will hit
   EPERM despite `/tmp` (canonically `/private/tmp`) being in
   `allowWrite`. Most CLIs respect `$TMPDIR` which `srt` overrides to
