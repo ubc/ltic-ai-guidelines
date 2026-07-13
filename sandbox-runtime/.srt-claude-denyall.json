@@ -38,7 +38,8 @@
       "~/Library/Application Support/glab-cli",
       "~/.gitconfig",
       "~/.ssh/config",
-      "~/.ssh/known_hosts"
+      "~/.ssh/known_hosts",
+      "~/Library/pnpm"
     ],
     "denyReadAlways": [
       "/**/.env*",
@@ -48,6 +49,7 @@
       "/**/id_ed25519*",
       "/**/credentials.json",
       "/**/credentials",
+      "/**/credentials.toml",
       "/**/secrets.yaml",
       "/**/secrets.yml"
     ],
@@ -60,7 +62,11 @@
       "~/.claude.json",
       "~/.claude.json.lock",
       "~/.local/state/claude",
-      "~/.local/share/uv"
+      "~/.local/share/uv",
+      "~/.cargo/registry",
+      "~/.cargo/git",
+      "~/.cargo/.package-cache",
+      "~/Library/pnpm/store"
     ],
     "denyWrite": [
       "~/.claude/settings.json",

@@ -44,6 +44,16 @@ function _ccx_run {
   mkdir -p "$td"
   chmod 700 "$td"
 
+  # The /**/*.pem deny glob blocks /etc/ssl/cert.pem, breaking every TLS
+  # stack that reads a CA bundle from disk (cargo, system curl, git-over-
+  # HTTPS, python/certifi). Stage the public root store at a .crt path the
+  # glob doesn't match. This copy runs OUTSIDE the sandbox; $td is readable
+  # inside. Public certs only — no weakening of the private-key globs. If
+  # network.tlsTerminate is ever enabled, srt's MITM CA must be appended
+  # to this bundle.
+  local cabundle="$td/ca-bundle.crt"
+  cp /etc/ssl/cert.pem "$cabundle"
+
   # gh stores its token in the macOS keychain, which the sandbox denies. Pull
   # it out here so gh inside the sandbox can authenticate via $GH_TOKEN.
   local gh_token=""
@@ -67,10 +77,23 @@ function _ccx_run {
     fi
   fi
 
+  # SSL_CERT_FILE/CURL_CA_BUNDLE cover curl, python, openssl-cli, etc.
+  # CARGO_HTTP_CAINFO is required separately — cargo's statically-linked
+  # libcurl ignores SSL_CERT_FILE. GIT_SSL_CAINFO likewise for git.
+  # pnpm_config_store_dir pins pnpm's global store: its store-selection
+  # heuristic misfires inside the sandbox and silently falls back to a
+  # per-project .pnpm-store/ even when the global store is writable
+  # (pnpm ≥10 reads pnpm_config_* env vars).
   CLAUDE_CODE_TMPDIR="$td" \
   DISABLE_FEEDBACK_COMMAND=1 \
   CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 \
   GH_TOKEN="$gh_token" \
+  SSL_CERT_FILE="$cabundle" \
+  CURL_CA_BUNDLE="$cabundle" \
+  CARGO_HTTP_CAINFO="$cabundle" \
+  GIT_SSL_CAINFO="$cabundle" \
+  REQUESTS_CA_BUNDLE="$cabundle" \
+  pnpm_config_store_dir="$HOME/Library/pnpm/store" \
     srt --settings "$settings" -- claude "$@"
 }
 
