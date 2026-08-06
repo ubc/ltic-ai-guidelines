@@ -27,6 +27,13 @@
     ]
   },
   "filesystem": {
+    "allowRead": [
+      "/**/.env.example",
+      "/**/.env.sample",
+      "/**/.env.template",
+      "/**/.env.dist",
+      "/**/id_*.pub"
+    ],
     "denyRead": [
       "~/.ssh-vault",
       "~/.aws-vault",

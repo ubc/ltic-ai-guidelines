@@ -62,7 +62,11 @@ too much friction.
   `github.com` / `*.github.com` ([details](DETAILS.md#gh-and-glab)).
 - **`denyReadAlways`** — credential globs (`/**/.env*`, `/**/*.pem`,
   `/**/id_*`, …) that deny reads everywhere, even inside `allowRead`'d
-  paths. Fork-only field; patterns need a leading `/` to be global
+  paths. Fork-only field; patterns need a leading `/` to be global.
+  Known-safe names the globs catch by accident — `.env.example` and
+  friends, `id_*.pub` — are carved back out via
+  **`denyReadAlwaysExcept`** (denyall; fork `0.0.70-ltic.5`) / glob
+  `allowRead` entries (allowall)
   ([details](DETAILS.md#filesystem-rule-mechanics)).
 - **`denyWrite`** for `~/.claude/settings*.json` and
   `~/.claude/CLAUDE.md` — closes hook-installation persistence vectors
@@ -109,7 +113,7 @@ Verify the install:
 
 ```bash
 which srt          # → ~/.nvm/versions/node/<ver>/bin/srt
-srt --version      # → 0.0.70-ltic.4   (the -ltic suffix confirms the patched fork)
+srt --version      # → 0.0.70-ltic.5   (the -ltic suffix confirms the patched fork)
 ```
 
 Also install socat — it's what carries sandboxed SSH through the
@@ -275,9 +279,11 @@ posture it affects.
   `ccx` ([details](DETAILS.md#credential-plumbing)).
 
 - **`.pem`/`.key` files are blocked everywhere — including non-secret
-  ones.** *(both)* The system CA bundle is handled automatically:
-  `tlsTerminate` makes srt inject its own bundle at an allowed path.
-  For anything else, rename/copy to `.crt` or `.pem.txt`
+  ones.** *(both)* The system CA bundle is handled automatically
+  (`tlsTerminate` injects srt's own bundle), and known-safe names are
+  already excepted: `.env.example`/`.env.sample`/`.env.template`/
+  `.env.dist` and `id_*.pub` are readable. For anything else, add it
+  to the exception list or rename/copy to `.crt`/`.pem.txt`
   ([details](DETAILS.md#filesystem-rule-mechanics)).
 
 - **Sandbox denials are explained in-session.** *(both)* The
@@ -325,9 +331,9 @@ posture it affects.
   via `ssh-add`.** *(both)* Auth goes through the forwarded ssh-agent
   socket (raw keys stay unreadable; run `ssh-add`, or `ssh-add -c`
   for per-use confirmation, before launching) and the connection
-  tunnels through the proxy via srt's socat `ProxyCommand`. If your
-  ssh config sets `IdentitiesOnly yes`, add the sandbox-scoped
-  override from the details page or auth fails despite the agent.
+  tunnels through the proxy via srt's socat `ProxyCommand`.
+  `IdentitiesOnly yes` setups work as-is — public keys are readable
+  via the `id_*.pub` exception, and the agent signs.
   Plain `ssh` outside git: `eval "$GIT_SSH_COMMAND git@github.com"`
   ([details](DETAILS.md#ssh)). While a session runs, sandboxed code
   can authenticate as you to anything the agent holds keys for —
