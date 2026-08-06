@@ -72,6 +72,13 @@
       "/**/secrets.yaml",
       "/**/secrets.yml"
     ],
+    "denyReadAlwaysExcept": [
+      "/**/.env.example",
+      "/**/.env.sample",
+      "/**/.env.template",
+      "/**/.env.dist",
+      "/**/id_*.pub"
+    ],
     "allowWrite": [
       ".",
       "/private/tmp",

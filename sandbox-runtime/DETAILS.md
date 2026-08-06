@@ -50,7 +50,15 @@ around upstream limitations:
    nothing on stock `srt`. Our fork adds a third layer,
    `denyReadAlways`, that emits glob deny rules **after** the allowRead
    rules so they win — letting credential globs like `/**/.env*`
-   actually take effect inside an allowed directory.
+   actually take effect inside an allowed directory. Since
+   `0.0.70-ltic.5` it has an exception layer, `denyReadAlwaysExcept`:
+   known-safe names caught by a broad glob (`.env.example`,
+   `id_*.pub`) are re-allowed by allow rules emitted after the
+   denyAlways denies — the highest-priority read rule. The same commit
+   fixed two gaps in the feature: denyAlways rules were silently
+   dropped whenever `credentials.files` masking was configured, and a
+   config whose *only* read restriction was `denyReadAlways` ran
+   unsandboxed.
 
 The third delta (in `src/cli.ts`, no upstream PR) makes denials
 *observable*: the CLI enables the seatbelt log monitor (upstream only
@@ -253,7 +261,7 @@ install their own CA anyway. This mirrors srt's own Windows
 persistent-CA design.
 
 `enableWeakerNetworkIsolation: true` is still required as of
-`srt 0.0.70-ltic.4` — it's what lets sandboxed processes reach trustd
+`srt 0.0.70-ltic.5` — it's what lets sandboxed processes reach trustd
 at all: with it set to `false`, `gh api` fails the TLS handshake with
 `x509: OSStatus -26276` regardless of keychain trust. It is also
 load-bearing for `GH_TOKEN` masking, which happens inside the
@@ -293,11 +301,27 @@ private key is a direct exfil path, and most private keys *do* use these
 extensions. The breadth is the cost of that coverage. The biggest
 casualty — system CA bundles, which would break cargo/curl/git/python
 TLS — is handled automatically by [srt's injected trust
-bundle](#tls-inside-the-sandbox). For some *other* non-secret
-`.pem`/`.key` a build needs: copy it to a path that doesn't match the
-glob (rename to `.crt`/`.cert`, or stage it as `cert.pem.txt`) and point
-the tool there; or drop the two globs from `denyReadAlways` (denyall) /
-`denyRead` (allowall) if you accept the weaker posture.
+bundle](#tls-inside-the-sandbox).
+
+**Carving known-safe names back out.** Read-rule priority is
+`denyReadAlwaysExcept > denyReadAlways > allowRead > denyRead`
+(each layer's rules are emitted after the previous one's;
+Seatbelt is last-match-wins). That gives each posture a precise
+escape hatch for names a broad glob catches by accident:
+
+- **denyall** lists them in `denyReadAlwaysExcept` (fork-only,
+  `0.0.70-ltic.5`) — needed because its globs live in
+  `denyReadAlways`, which beats `allowRead`.
+- **allowall** lists the same names in glob `allowRead` entries — its
+  globs live in plain `denyRead`, which `allowRead` already outranks,
+  so stock srt semantics suffice.
+
+Both configs except `.env.example`, `.env.sample`, `.env.template`,
+`.env.dist` (config templates, meant to be read) and `id_*.pub`
+(public keys — which ssh's `IdentitiesOnly` needs readable, see
+[SSH](#ssh)). For a one-off non-secret `.pem`/`.key` a build needs:
+add it to the exception list, or copy it to a path that doesn't match
+the glob (rename to `.crt`/`.cert`, or stage it as `cert.pem.txt`).
 
 **`/private/tmp`, not `/tmp`.** Seatbelt does not resolve the
 `/tmp → /private/tmp` symlink in `(subpath …)` allow rules, so a bare
@@ -416,23 +440,21 @@ Two pieces make it reachable:
 
 Keys must be loaded (`ssh-add`) before launching.
 
-**`IdentitiesOnly yes` blocks the agent path — add a sandbox-scoped
-override.** With `IdentitiesOnly yes` (common in per-host multi-key
-setups), ssh offers *only* the listed `IdentityFile` identities — and
-inside the sandbox it can read neither the private key nor its `.pub`
-sibling (both match the `/**/id_*` globs), so it offers nothing and
-auth fails with `Permission denied (publickey)` even though the agent
-holds the key. ssh config is first-obtained-value-wins, so a `Match`
-block at the **top** of `~/.ssh/config`, keyed on the sandbox-only
-`SRT_VIOLATIONS_FILE` env var, relaxes it for sandbox sessions only:
-
-```
-Match exec "test -n \"$SRT_VIOLATIONS_FILE\""
-    IdentitiesOnly no
-```
-
-Outside the sandbox the variable is unset, the block doesn't match,
-and the per-host `IdentitiesOnly yes` behaves exactly as before.
+**`IdentitiesOnly yes` works because public keys are readable.** With
+`IdentitiesOnly yes` (common in per-host multi-key setups), ssh offers
+*only* the listed `IdentityFile` identities. The private key file is
+unreadable inside the sandbox — but OpenSSH's documented fallback
+handles that: when it can't load the private key it reads
+`<IdentityFile>.pub` and asks the agent to sign for the matching key.
+That works here because `/**/id_*.pub` is in the configs' exception
+list (`denyReadAlwaysExcept` / allowall `allowRead`) as of
+`0.0.70-ltic.5` — only the `.pub` needs to be readable, and public
+keys aren't secrets. (On a pre-`ltic.5` build, where the `.pub` is
+also glob-denied, the fallback workaround is a sandbox-scoped ssh
+config override at the top of `~/.ssh/config`:
+`Match exec "test -n \"$SRT_VIOLATIONS_FILE\""` +
+`IdentitiesOnly no` — first-obtained-value-wins, and the env var only
+exists inside the sandbox.)
 
 **The transport: socat through the proxy (requires
 `brew install socat`).** Authentication is only half of SSH; the TCP
