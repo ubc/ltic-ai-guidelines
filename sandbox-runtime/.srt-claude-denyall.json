@@ -2,10 +2,29 @@
   "network": {
     "allowedDomains": [],
     "deniedDomains": [
-      "gist.github.com"
+      "gist.github.com",
+      "*:25",
+      "*:587",
+      "*:465"
     ],
+    "deniedDomainReasons": {
+      "gist.github.com": "Creating gists is blocked by sandbox policy (exfiltration risk). Write to a file in the repo instead.",
+      "*:25": "Direct SMTP is blocked by sandbox policy.",
+      "*:587": "Direct SMTP is blocked by sandbox policy.",
+      "*:465": "Direct SMTP is blocked by sandbox policy."
+    },
     "allowAllDomains": true,
-    "allowLocalBinding": false
+    "allowLocalBinding": true,
+    "tlsTerminate": {}
+  },
+  "credentials": {
+    "envVars": [
+      {
+        "name": "GH_TOKEN",
+        "mode": "mask",
+        "injectHosts": ["github.com", "*.github.com"]
+      }
+    ]
   },
   "filesystem": {
     "denyRead": [
@@ -72,6 +91,14 @@
       "~/.claude/settings.json",
       "~/.claude/settings.local.json",
       "~/.claude/CLAUDE.md"
+    ]
+  },
+  "ignoreViolations": {
+    "*": [
+      "sysctl-read kern.",
+      "mach-lookup com.apple.SystemConfiguration.configd",
+      ".GlobalPreferences",
+      "Library/Preferences/ByHost"
     ]
   },
   "enableWeakerNetworkIsolation": true,

@@ -20,6 +20,7 @@ and deep dives live in [DETAILS.md](DETAILS.md).
 | `.srt-claude-allowall.json` | Permissive posture — default-allow reads, explicit deny-list for sensitive paths |
 | `.zshrc.example` | Shell functions (`ccx`, `ccx_permissive`, `srtlog`) for zsh |
 | `.bashrc.example` | Same functions ported to bash |
+| `srt-violations.mjs` | Claude Code hook that surfaces sandbox denials into the agent's context |
 | `DETAILS.md` | Design notes and deep dives behind the callouts here |
 
 ## The two postures
@@ -44,8 +45,21 @@ too much friction.
 
 - **`allowAllDomains: true`** — no domain allow-list; requires the
   forked `srt` ([details](DETAILS.md#the-fork)).
-- **`deniedDomains: ["gist.github.com"]`** — explicit denies beat
-  allow-all; closes one easy exfil channel.
+- **`deniedDomains`** — explicit denies beat allow-all:
+  `gist.github.com` closes one easy exfil channel, and the port-scoped
+  `*:25` / `*:587` / `*:465` entries block direct SMTP (a quiet exfil
+  protocol) without giving up default-allow. Each entry has a
+  **`deniedDomainReasons`** string that replaces the generic deny text
+  on the violation line the agent sees
+  ([details](DETAILS.md#the-violations-pipeline)).
+- **`tlsTerminate: {}`** — srt's MITM proxy terminates TLS, builds its
+  own trust bundle (MITM CA + host roots), and sets `SSL_CERT_FILE`,
+  `CURL_CA_BUNDLE`, `CARGO_HTTP_CAINFO`, `GIT_SSL_CAINFO`,
+  `REQUESTS_CA_BUNDLE` for the sandboxed process — no manual CA
+  staging needed ([details](DETAILS.md#tls-inside-the-sandbox)).
+- **`credentials.envVars` masks `GH_TOKEN`** — the sandbox sees a fake
+  token; the proxy injects the real one only on egress to
+  `github.com` / `*.github.com` ([details](DETAILS.md#gh-and-glab)).
 - **`denyReadAlways`** — credential globs (`/**/.env*`, `/**/*.pem`,
   `/**/id_*`, …) that deny reads everywhere, even inside `allowRead`'d
   paths. Fork-only field; patterns need a leading `/` to be global
@@ -56,10 +70,14 @@ too much friction.
 - **`allowWrite`** uses `/private/tmp`, not `/tmp` — Seatbelt doesn't
   resolve the symlink ([details](DETAILS.md#filesystem-rule-mechanics)).
 - **`enableWeakerNetworkIsolation: true`** — required for trustd-based
-  TLS verification (`gh`, Go binaries, etc.)
-  ([details](DETAILS.md#tls-inside-the-sandbox)).
-- Cert-pinned / mTLS hosts can be excluded per-domain via
-  `network.tlsTerminate.excludeDomains` — not set here
+  TLS verification (`gh`, Go binaries, etc.), and for the masking
+  setup above ([details](DETAILS.md#tls-inside-the-sandbox)).
+- **`ignoreViolations`** — suppresses benign macOS violation noise
+  (sysctl `kern.*`, preferences plists, configd lookups) from the
+  violations the agent sees
+  ([details](DETAILS.md#the-violations-pipeline)).
+- Cert-pinned / mTLS hosts break under TLS termination — exclude them
+  per-domain via `network.tlsTerminate.excludeDomains`; none set here
   ([details](DETAILS.md#tls-inside-the-sandbox)).
 
 ## Setup
@@ -68,10 +86,15 @@ too much friction.
 
 Upstream `srt` has no allow-all-egress mode and ignores glob denies
 inside `allowRead` regions; the fork adds `allowAllDomains` and
-`denyReadAlways` to fix both ([details](DETAILS.md#the-fork), upstream
-PRs [#283](https://github.com/anthropic-experimental/sandbox-runtime/pull/283)
-and [#284](https://github.com/anthropic-experimental/sandbox-runtime/pull/284) —
-once merged, plain `npm install -g @anthropic-ai/sandbox-runtime` will do).
+`denyReadAlways` to fix both (upstream PRs
+[#283](https://github.com/anthropic-experimental/sandbox-runtime/pull/283)
+and [#284](https://github.com/anthropic-experimental/sandbox-runtime/pull/284)),
+plus three more deltas: the CLI streams sandbox violations to a file
+the agent can be shown
+([pipeline](DETAILS.md#the-violations-pipeline)), unrecognized
+settings keys produce a launch-time warning instead of being silently
+ignored, and git-over-SSH works on macOS via an auth-capable socat
+ProxyCommand ([details](DETAILS.md#the-fork)).
 
 ```bash
 git clone https://github.com/ubc/sandbox-runtime.git
@@ -86,18 +109,25 @@ Verify the install:
 
 ```bash
 which srt          # → ~/.nvm/versions/node/<ver>/bin/srt
-srt --version      # → 0.0.62-ltic.1   (the -ltic suffix confirms the patched fork)
+srt --version      # → 0.0.70-ltic.4   (the -ltic suffix confirms the patched fork)
+```
+
+Also install socat — it's what carries sandboxed SSH through the
+authenticated proxy (without it srt falls back to `nc`, which can't
+authenticate, and git-over-SSH stays broken):
+
+```bash
+brew install socat
 ```
 
 Functional check that `allowAllDomains` is honored — stock `srt`
-silently drops the unknown key (needs the configs from step 2; the
-`--cacert` staging matters, [details](DETAILS.md#the-fork)):
+silently drops the unknown key (needs the configs from step 2;
+`tlsTerminate` makes srt point curl at its own CA bundle, so no
+`--cacert` staging is needed, [details](DETAILS.md#the-fork)):
 
 ```bash
-mkdir -p /tmp/claude && cp /etc/ssl/cert.pem /tmp/claude/ca-bundle.crt
 srt --settings ~/.srt-claude-denyall.json -- \
-  curl --cacert /tmp/claude/ca-bundle.crt -s -o /dev/null \
-       -w '%{http_code}\n' --max-time 5 https://example.com/
+  curl -s -o /dev/null -w '%{http_code}\n' --max-time 5 https://example.com/
 # 200          → patched srt: allowAllDomains is honored
 # 000 / hang   → stock srt: the connection was blocked at the proxy
 ```
@@ -133,7 +163,68 @@ printf '#!/usr/bin/env bash\n source ~/.claude-sandbox.bash\n srtlog "$@"\n' > ~
 chmod +x ~/.local/bin/ccx ~/.local/bin/ccx_permissive ~/.local/bin/srtlog
 ```
 
-### 4. Use it
+### 4. Trust the sandbox MITM CA (one-time)
+
+`tlsTerminate` means srt re-signs upstream certificates. PEM-reading
+tools (curl, cargo, git, python) trust the re-signed certs via the env
+vars srt sets — but tools that verify through the macOS trust store
+(`gh` and other Go binaries) ask trustd, which knows nothing about
+srt's CA and fails with `x509: certificate signed by unknown
+authority`. Fix: `_ccx_run` generates a **persistent** CA on first
+launch (`~/.config/srt/mitm-ca.{crt,key}`) and points srt at it, so
+you can trust it once in your login keychain:
+
+Run `ccx` once (any short session — the wrapper generates the CA on
+first launch), then:
+
+```bash
+security add-trusted-cert -p ssl -k ~/Library/Keychains/login.keychain-db ~/.config/srt/mitm-ca.crt
+```
+
+macOS shows an authorization prompt; approving it adds the CA as
+SSL-trusted **for your user only**. The private key stays on this
+machine, mode 600, and is unreadable inside the sandbox (the
+`/**/*.key` deny glob) — only host processes running as you could
+misuse it, and those could install their own CA anyway
+([details](DETAILS.md#tls-inside-the-sandbox)).
+
+### 5. Install the violations hook
+
+Sandbox denials are logged by the forked `srt` to a file
+(`~/.local/state/srt/violations-<pid>.log`, advertised via
+`$SRT_VIOLATIONS_FILE`). This Claude Code hook feeds new lines into the
+agent's context after each Bash command, so a policy block reads as
+policy — with its configured reason — instead of a mysterious
+403/EPERM ([details](DETAILS.md#the-violations-pipeline)):
+
+```bash
+mkdir -p ~/.claude/hooks
+cp srt-violations.mjs ~/.claude/hooks/
+```
+
+Then merge into the `hooks` key of `~/.claude/settings.json`:
+
+```json
+"hooks": {
+  "PostToolUse": [
+    {
+      "matcher": "Bash",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "node \"$HOME/.claude/hooks/srt-violations.mjs\"",
+          "timeout": 10
+        }
+      ]
+    }
+  ]
+}
+```
+
+Outside an srt sandbox `$SRT_VIOLATIONS_FILE` is unset and the hook is
+a no-op, so it's safe to leave registered globally.
+
+### 6. Use it
 
 ```bash
 cd ~/src/your-project
@@ -153,14 +244,21 @@ the sandbox fails with EPERM and you want to know why.
   Keychain (unreadable inside) to `~/.claude/.credentials.json`, with
   the refresh token nulled so only the short-lived access token touches
   disk ([details](DETAILS.md#credential-plumbing)).
-- **Stages a CA bundle** — copies `/etc/ssl/cert.pem` (blocked inside by
-  the `*.pem` glob) to `$td/ca-bundle.crt` and sets `SSL_CERT_FILE`,
-  `CURL_CA_BUNDLE`, `CARGO_HTTP_CAINFO`, `GIT_SSL_CAINFO`,
-  `REQUESTS_CA_BUNDLE` — fixes cargo, curl, git-over-HTTPS, python TLS
-  ([details](DETAILS.md#tls-inside-the-sandbox)).
-- **Injects `GH_TOKEN`** via `gh auth token`, so `gh` works inside
-  ([details](DETAILS.md#gh-and-glab)). `glab` needs nothing — it reads
-  its own config file.
+- **Extracts `GH_TOKEN`** via `gh auth token` (the Keychain is
+  unreadable inside), then hands it to srt, which **masks** it: the
+  sandbox sees a fake token and the proxy injects the real one only
+  toward GitHub ([details](DETAILS.md#gh-and-glab)). `glab` needs
+  nothing — it reads its own config file.
+- **Maintains the persistent MITM CA** — generates
+  `~/.config/srt/mitm-ca.{crt,key}` on first launch so srt signs with
+  the same CA every session (trusted once in the keychain, setup
+  step 4) ([details](DETAILS.md#tls-inside-the-sandbox)).
+- **Forwards the ssh-agent socket** so git-over-SSH and `ssh` work
+  through the agent while raw private keys stay unreadable: passes
+  `SSH_AUTH_SOCK` through and writes a per-launch config copy that
+  injects the session's socket path (`network.allowUnixSockets` — the
+  launchd path changes every login) and the CA paths
+  ([details](DETAILS.md#ssh)).
 - **Pins pnpm's global store** via `pnpm_config_store_dir`, preventing
   silent per-project `.pnpm-store/` fallback
   ([details](DETAILS.md#pnpm-and-uv)).
@@ -177,9 +275,33 @@ posture it affects.
   `ccx` ([details](DETAILS.md#credential-plumbing)).
 
 - **`.pem`/`.key` files are blocked everywhere — including non-secret
-  ones.** *(both)* System CA bundles are handled automatically by the
-  CA staging; for anything else, rename/copy to `.crt` or `.pem.txt`
+  ones.** *(both)* The system CA bundle is handled automatically:
+  `tlsTerminate` makes srt inject its own bundle at an allowed path.
+  For anything else, rename/copy to `.crt` or `.pem.txt`
   ([details](DETAILS.md#filesystem-rule-mechanics)).
+
+- **Sandbox denials are explained in-session.** *(both)* The
+  violations hook surfaces each denial — with its configured reason —
+  into the agent's context after the next Bash command. Filesystem
+  denials arrive with ~1–2 s of log latency; network denials are
+  instant ([details](DETAILS.md#the-violations-pipeline)).
+
+- **Tools that bypass the proxy see a fake `GH_TOKEN` and fail GitHub
+  auth.** *(both)* That's the masking working — the sentinel is
+  worthless, so it's a functionality caveat, not a leak. Anything
+  going through the proxy (gh, git-over-HTTPS, curl) authenticates
+  fine ([details](DETAILS.md#gh-and-glab)).
+
+- **`gh` fails with `x509: certificate signed by unknown authority`?**
+  *(both)* The MITM CA isn't trusted yet — run setup step 4. PEM-based
+  tools (curl, cargo, git) work either way; only trustd-verifying
+  tools (Go binaries) need the keychain trust.
+
+- **Cert-pinned or mTLS hosts fail under TLS termination.** *(both)*
+  The proxy re-signs certificates with srt's MITM CA, which pinning
+  rejects. Add the offending host to
+  `network.tlsTerminate.excludeDomains` rather than turning
+  termination off ([details](DETAILS.md#tls-inside-the-sandbox)).
 
 - **cargo works inside; `cargo install`, `cargo publish`, and `rustup`
   run outside.** *(both)* Registry/git caches are writable;
@@ -199,12 +321,20 @@ posture it affects.
   git config --add credential.helper '!gh auth git-credential'
   ```
 
-- **All SSH is blocked** — git-over-SSH, `ssh`, `sftp` — because raw
-  private keys are unreadable. *(both)* Use HTTPS + token (below), or
-  SSH agent forwarding ([details](DETAILS.md#ssh)).
+- **git-over-SSH works — needs `brew install socat` and keys loaded
+  via `ssh-add`.** *(both)* Auth goes through the forwarded ssh-agent
+  socket (raw keys stay unreadable; run `ssh-add`, or `ssh-add -c`
+  for per-use confirmation, before launching) and the connection
+  tunnels through the proxy via srt's socat `ProxyCommand`. If your
+  ssh config sets `IdentitiesOnly yes`, add the sandbox-scoped
+  override from the details page or auth fails despite the agent.
+  Plain `ssh` outside git: `eval "$GIT_SSH_COMMAND git@github.com"`
+  ([details](DETAILS.md#ssh)). While a session runs, sandboxed code
+  can authenticate as you to anything the agent holds keys for —
+  mitigate with `ssh-add -c` or hardware-backed keys.
 
 - **`git push`/`git pull` over HTTPS works with a one-time credential
-  helper setup.** *(both)*
+  helper setup** (alternative to SSH remotes). *(both)*
   ```bash
   # GitHub — one-time setup per repo
   git remote set-url origin https://github.com/ORG/REPO.git
@@ -245,4 +375,4 @@ posture it affects.
 - [Using on Linux](DETAILS.md#using-on-linux) — config tweaks for
   bubblewrap/seccomp.
 - [Future directions](DETAILS.md#future-directions) — srt primitives
-  not exercised yet (credential masking, URL filtering, egress audit).
+  not exercised yet (URL filtering, egress audit, per-tool policies).
