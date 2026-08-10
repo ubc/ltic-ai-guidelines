@@ -240,6 +240,62 @@ ccx_permissive   # deny-list sandbox
 number for "last N minutes" of history). Useful when something inside
 the sandbox fails with EPERM and you want to know why.
 
+## Upgrading from 0.0.62
+
+If you set this up when the fork was at `0.0.62-ltic.1`, four things
+have changed since: the `srt` binary, both config files, the shell
+functions, and two new one-time setup steps. In order:
+
+1. **Rebuild and reinstall `srt`** from your existing clone of the fork:
+
+   ```bash
+   cd path/to/sandbox-runtime   # your clone of github.com/ubc/sandbox-runtime
+   git checkout ltic-main
+   git pull
+   npm install
+   npm run build
+   npm install -g .
+   srt --version                # → 0.0.70-ltic.5
+   ```
+
+2. **Install socat** (new dependency — carries sandboxed SSH through
+   the authenticated proxy; `jq` is also used by the new shell
+   functions if you don't already have it):
+
+   ```bash
+   brew install socat jq
+   ```
+
+3. **Replace both config files.** The new versions add `tlsTerminate`,
+   `GH_TOKEN` masking (`credentials.envVars`), `denyReadAlways` /
+   `denyReadAlwaysExcept`, `deniedDomainReasons`, and
+   `ignoreViolations`. If you customized your copies (extra `allowRead`
+   paths, etc.), re-apply those edits on top of the new files:
+
+   ```bash
+   cp .srt-claude-denyall.json .srt-claude-allowall.json ~/
+   ```
+
+4. **Replace the shell functions.** The wrapper now generates a
+   persistent MITM CA, writes a per-launch config (ssh-agent socket +
+   CA paths), and pins pnpm's store — the old block won't work with the
+   new configs. Delete the old `ccx`/`ccx_permissive`/`srtlog` block
+   from your `~/.zshrc` (or `~/.bash_profile`), then re-append and
+   reload:
+
+   ```bash
+   cat .zshrc.example >> ~/.zshrc
+   source ~/.zshrc
+   ```
+
+5. **Do the two setup steps that didn't exist in 0.62:** trust the
+   MITM CA in your login keychain ([setup step 4](#4-trust-the-sandbox-mitm-ca-one-time))
+   and install the violations hook ([setup step 5](#5-install-the-violations-hook)).
+
+Then launch `ccx` as before. Quick smoke test: `gh api user` inside
+the session exercises the proxy, TLS termination, keychain trust, and
+token masking all at once.
+
 ## What the shell functions do
 
 `_ccx_run` handles several pieces of plumbing on every launch:
