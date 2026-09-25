@@ -35,7 +35,17 @@
       "/etc/openldap",
       "/etc/krb5.conf",
       "/private/var/log/jamf.log",
-      "/private/var/folders"
+      "/private/var/folders",
+      "/**/.env*",
+      "/**/*.pem",
+      "/**/*.key",
+      "/**/id_rsa*",
+      "/**/id_ed25519*",
+      "/**/credentials.json",
+      "/**/credentials",
+      "/**/credentials.toml",
+      "/**/secrets.yaml",
+      "/**/secrets.yml"
     ],
     "allowRead": [
       ".",
@@ -58,26 +68,14 @@
       "~/.gitconfig",
       "~/.ssh/config",
       "~/.ssh/known_hosts",
-      "~/Library/pnpm"
-    ],
-    "denyReadAlways": [
-      "/**/.env*",
-      "/**/*.pem",
-      "/**/*.key",
-      "/**/id_rsa*",
-      "/**/id_ed25519*",
-      "/**/credentials.json",
-      "/**/credentials",
-      "/**/credentials.toml",
-      "/**/secrets.yaml",
-      "/**/secrets.yml"
-    ],
-    "denyReadAlwaysExcept": [
+      "~/Library/pnpm",
       "/**/.env.example",
       "/**/.env.sample",
       "/**/.env.template",
       "/**/.env.dist",
-      "/**/id_*.pub"
+      "/**/id_*.pub",
+      "/**/id_rsa*.pub",
+      "/**/id_ed25519*.pub"
     ],
     "allowWrite": [
       ".",
