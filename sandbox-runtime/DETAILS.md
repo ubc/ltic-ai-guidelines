@@ -28,8 +28,8 @@ needed and is additive — existing configs are unaffected.
 
 ## The fork
 
-The fork carries five deltas over upstream `srt`. The first two work
-around upstream limitations:
+The fork carries four deltas over upstream `srt`. The first works
+around an upstream limitation:
 
 1. **No "allow all egress" mode.** The schema rejects `"*"` in
    `allowedDomains`, and there is no flag to disable network
@@ -38,36 +38,31 @@ around upstream limitations:
    allowlist **after** `deniedDomains` is checked. (As of
    `0.0.70-ltic.3` the flag is also honored by the config validator's
    `injectHosts`-reachability cross-check, so credential masking with
-   `allowedDomains: []` loads as written.)
-2. **A *glob* `denyRead` inside an `allowRead` region is ignored.**
-   Upstream [PR #311](https://github.com/anthropic-experimental/sandbox-runtime/pull/311)
-   fixed the *literal* case — a literal path in `denyRead` nested under
-   an `allowRead` subtree is now re-emitted after the allow rules and
-   wins. But upstream deliberately does **not** re-emit *glob* denies
-   (the regex-vs-subpath nesting isn't decidable at rule-generation
-   time — see the comment in `generateReadRules`), so a credential glob
-   like `/**/.env*` inside a broad `allowRead` like `~/src` still does
-   nothing on stock `srt`. Our fork adds a third layer,
-   `denyReadAlways`, that emits glob deny rules **after** the allowRead
-   rules so they win — letting credential globs like `/**/.env*`
-   actually take effect inside an allowed directory. Since
-   `0.0.70-ltic.5` it has an exception layer, `denyReadAlwaysExcept`:
-   known-safe names caught by a broad glob (`.env.example`,
-   `id_*.pub`) are re-allowed by allow rules emitted after the
-   denyAlways denies — the highest-priority read rule. The same commit
-   fixed two gaps in the feature: denyAlways rules were silently
-   dropped whenever `credentials.files` masking was configured, and a
-   config whose *only* read restriction was `denyReadAlways` ran
-   unsandboxed.
+   `allowedDomains: []` loads as written.) As of `0.0.77-ltic.1` the
+   flag covers **hostnames only**: IP literals and `localhost` /
+   `*.localhost` still need an explicit `allowedDomains` entry.
+   Upstream 0.0.77 added a resolved-address guard that refuses
+   loopback, link-local and cloud-metadata destinations, but it
+   trusts anything allow-listed. Under the old build the flag made
+   everything allow-listed, so `http://169.254.169.254/` and
+   `http://127.0.0.1:<port>` were forwarded. They now get a 403, as do
+   hostnames that *resolve* to those addresses.
 
-The third delta (in `src/cli.ts`, no upstream PR) makes denials
+(Through `0.0.70-ltic.5` the fork also carried `denyReadAlways` /
+`denyReadAlwaysExcept`, because stock srt ignored a *glob* `denyRead`
+inside an `allowRead` region. Upstream 0.0.77 fixed that — see
+[filesystem rule mechanics](#filesystem-rule-mechanics) — and the
+fields were retired. Leftover keys now get the unrecognized-key
+warning and do nothing.)
+
+The second delta (in `src/cli.ts`, no upstream PR) makes denials
 *observable*: the CLI enables the seatbelt log monitor (upstream only
 collects proxy denials in CLI mode) and streams every violation line to
 `~/.local/state/srt/violations-<pid>.log`, exporting the path to the
 sandboxed child as `$SRT_VIOLATIONS_FILE`. See [the violations
 pipeline](#the-violations-pipeline).
 
-The fourth delta (in `src/utils/config-loader.ts`, no upstream PR)
+The third delta (in `src/utils/config-loader.ts`, no upstream PR)
 makes misconfiguration *visible*: upstream's zod schema silently strips
 any settings key it doesn't recognize — a typo'd `allowAllDomainz`
 loads with zero feedback and runs as a deny-all sandbox. The fork
@@ -75,7 +70,7 @@ prints a stderr warning at launch naming every unrecognized key with
 its full path (for both `--settings` files and control-fd config
 updates). It warns rather than errors, so nothing existing breaks.
 
-The fifth delta (in `src/sandbox/sandbox-utils.ts`, `0.0.70-ltic.4`,
+The fourth delta (in `src/sandbox/sandbox-utils.ts`, `0.0.70-ltic.4`,
 upstream [PR #452](https://github.com/anthropic-experimental/sandbox-runtime/pull/452))
 makes sandboxed git-over-SSH work on macOS:
 when socat is on PATH, `GIT_SSH_COMMAND` uses the auth-capable socat
@@ -91,7 +86,7 @@ reports a plain version with no `-ltic` suffix.
 The README's functional check exists because upstream stock `srt`
 *silently drops* the unknown `allowAllDomains` key during schema
 validation — a config that looks accepted can still be deny-all. (The
-fork itself no longer fails this way: delta 4 warns at launch about
+fork itself no longer fails this way: delta 3 warns at launch about
 any unrecognized key.) One trap in simpler versions of that check: `curl -sI … | head -1` prints
 the proxy's `HTTP/1.1 200 Connection Established` CONNECT response even
 when the request then *fails*, so check the real HTTP status instead.
@@ -102,6 +97,26 @@ fails with error 77 whether or not the domain was allowed. With
 that trap is gone — see [TLS inside the
 sandbox](#tls-inside-the-sandbox).)
 
+### Upstream changes in 0.0.77
+
+The upstream behaviour changes from the sync that matter here, apart
+from the filesystem and `allowAllDomains` changes above:
+
+- An invalid, empty or unreadable settings file now makes srt **exit
+  1** instead of silently running with defaults.
+- Deny globs ending in `/` are rejected.
+- IPv6 literals in domain lists must be bracketed (`[::1]:443`).
+- Default write paths now obey a covering `denyRead`.
+- New optional `network.deniedResolvedAddresses`: extra CIDRs an
+  allowed hostname must not resolve to. RFC1918 ranges are *not* in
+  the built-in set.
+- JVM proxy agent: Gradle, Maven and Bazel now honour the proxy
+  automatically.
+- Violation lines are sanitized to one physical line each, which
+  hardens the [violations hook](#the-violations-pipeline) against
+  forged lines.
+- Seatbelt profiles are roughly 6–10× smaller.
+
 ## The violations pipeline
 
 Without it, the agent inside the sandbox sees only a generic `403` or
@@ -110,7 +125,7 @@ network — a false positive it may burn time retrying. The pipeline
 lands each denial, with its configured reason, in the agent's context
 right after the failed command:
 
-1. **srt side (fork delta 3).** Every violation — filesystem (seatbelt
+1. **srt side (fork delta 2).** Every violation — filesystem (seatbelt
    log monitor) and network (proxy denial) — is appended, timestamped
    and one per line, to `~/.local/state/srt/violations-<pid>.log`.
    The path is exported as `$SRT_VIOLATIONS_FILE` to the sandboxed
@@ -303,25 +318,44 @@ casualty — system CA bundles, which would break cargo/curl/git/python
 TLS — is handled automatically by [srt's injected trust
 bundle](#tls-inside-the-sandbox).
 
-**Carving known-safe names back out.** Read-rule priority is
-`denyReadAlwaysExcept > denyReadAlways > allowRead > denyRead`
-(each layer's rules are emitted after the previous one's;
-Seatbelt is last-match-wins). That gives each posture a precise
-escape hatch for names a broad glob catches by accident:
+**How `denyRead` and `allowRead` interact (srt ≥0.0.77).** Both
+configs now use the same stock-srt mechanism:
 
-- **denyall** lists them in `denyReadAlwaysExcept` (fork-only,
-  `0.0.70-ltic.5`) — needed because its globs live in
-  `denyReadAlways`, which beats `allowRead`.
-- **allowall** lists the same names in glob `allowRead` entries — its
-  globs live in plain `denyRead`, which `allowRead` already outranks,
-  so stock srt semantics suffice.
+- A `denyRead` beats a *broader* `allowRead` region. `/**/.env*`
+  stays denied under `allowRead: ["~/src"]`, and a literal deny nested
+  under a literal allow (`~/src/x/secrets` under `~/src`) wins too.
+- A *narrower* `allowRead` beats the deny. This is how known-safe
+  names are carved out of a broad glob.
 
-Both configs except `.env.example`, `.env.sample`, `.env.template`,
-`.env.dist` (config templates, meant to be read) and `id_*.pub`
-(public keys — which ssh's `IdentitiesOnly` needs readable, see
-[SSH](#ssh)). For a one-off non-secret `.pem`/`.key` a build needs:
-add it to the exception list, or copy it to a path that doesn't match
-the glob (rename to `.crt`/`.cert`, or stage it as `cert.pem.txt`).
+Under the hood, srt emits the denies, then the allows, then re-emits
+the glob denies minus (`require-not`) every allow entry they cover
+(Seatbelt is last-match-wins). Nothing emitted after the allow block
+can make a path readable, so the carve-outs can only narrow a deny.
+
+**Carve-out gotcha: the allow must match the deny glob's shape.** srt
+decides whether an allow is covered by turning the allow glob into a
+sample path (each wildcard becomes `x`) and testing it against the
+deny's regex. `/**/id_ed25519*.pub` → `/x/id_ed25519x.pub` matches
+`/**/id_ed25519*`, so it carves out. `/**/id_*.pub` → `/x/id_x.pub`
+doesn't, so on its own it leaves ed25519 public keys denied. The
+configs keep `/**/id_*.pub` (it still re-allows public keys for other
+key types, such as ecdsa, inside denyall's `/Users` deny) and add
+`/**/id_rsa*.pub` and `/**/id_ed25519*.pub` next to it.
+
+**Deny globs also cover everything inside a matching folder.** srt
+adds a `(/.*)?` tail to glob denies, so `/**/.env*` also denies
+everything inside a directory named `.env/` (a common Python venv
+name), and `/**/credentials` does the same for a `credentials/`
+directory. The old fork `denyReadAlways` matched exact paths only.
+Rename such venvs to `.venv`.
+
+Both configs carve out `.env.example`, `.env.sample`, `.env.template`,
+`.env.dist` (config templates, meant to be read) and public keys
+(which ssh's `IdentitiesOnly` needs readable, see [SSH](#ssh)). For a
+one-off non-secret `.pem`/`.key` a build needs: add its exact path (or
+a narrower glob) to `allowRead`, or copy it to a path that doesn't
+match the glob (rename to `.crt`/`.cert`, or stage it as
+`cert.pem.txt`).
 
 **`/private/tmp`, not `/tmp`.** Seatbelt does not resolve the
 `/tmp → /private/tmp` symlink in `(subpath …)` allow rules, so a bare
@@ -414,8 +448,9 @@ git config --add credential.helper '!gh auth git-credential'
 
 ## SSH
 
-`denyReadAlways` includes `/**/id_*`, which covers every private key
-file (e.g. `~/.ssh/id_ed25519-github`). SSH needs to read the raw key
+`denyRead` includes `/**/id_rsa*` and `/**/id_ed25519*`, which cover
+every private key file of those types (e.g.
+`~/.ssh/id_ed25519-github`). SSH needs to read the raw key
 bytes for the initial handshake, so key-file auth is impossible inside
 the sandbox. Instead, **SSH works through agent forwarding** — the
 implemented default:
@@ -446,22 +481,19 @@ Keys must be loaded (`ssh-add`) before launching.
 unreadable inside the sandbox — but OpenSSH's documented fallback
 handles that: when it can't load the private key it reads
 `<IdentityFile>.pub` and asks the agent to sign for the matching key.
-That works here because `/**/id_*.pub` is in the configs' exception
-list (`denyReadAlwaysExcept` / allowall `allowRead`) as of
-`0.0.70-ltic.5` — only the `.pub` needs to be readable, and public
-keys aren't secrets. (On a pre-`ltic.5` build, where the `.pub` is
-also glob-denied, the fallback workaround is a sandbox-scoped ssh
-config override at the top of `~/.ssh/config`:
-`Match exec "test -n \"$SRT_VIOLATIONS_FILE\""` +
-`IdentitiesOnly no` — first-obtained-value-wins, and the env var only
-exists inside the sandbox.)
+That works here because both configs carve public keys out of the
+deny globs with `/**/id_rsa*.pub` and `/**/id_ed25519*.pub` in
+`allowRead` (spelled per key type so each matches its deny glob's
+shape — see [carve-out
+gotcha](#filesystem-rule-mechanics)). Only the `.pub` needs to be
+readable, and public keys aren't secrets.
 
 **The transport: socat through the proxy (requires
 `brew install socat`).** Authentication is only half of SSH; the TCP
 connection itself must traverse the srt proxy (direct DNS/egress is
 blocked — bare `ssh` fails with "Could not resolve hostname"). srt
 handles this by setting `GIT_SSH_COMMAND` with a `ProxyCommand`, and
-as of `0.0.70-ltic.4` (fork delta 5) the macOS spelling is
+as of `0.0.70-ltic.4` (fork delta 4) the macOS spelling is
 `socat - PROXY:localhost:%h:%p,proxyport=<port>,proxyauth=<user>:<token>` —
 an HTTP CONNECT tunnel that authenticates to the proxy, same as Linux
 has always used. (The previous BSD `nc -X 5` spelling could not speak
@@ -497,7 +529,8 @@ Alternatives:
   the credential to that host's HTTPS endpoint, and GitHub traffic
   stays visible to the proxy.
 
-- **Removing `/**/id_*` from `denyReadAlways` — not recommended.**
+- **Removing `/**/id_rsa*` / `/**/id_ed25519*` from `denyRead` — not
+  recommended.**
   Gives Claude read access to raw private key bytes, which allows key
   exfiltration over the network. Only if the threat model explicitly
   accepts it.
@@ -570,7 +603,7 @@ to any other host leaks a worthless sentinel. Caveats:
 - **The `credentials.*` sub-schema is `.strict()`** — a typo'd key
   under it is a hard config-load error. (Keys elsewhere are stripped
   rather than rejected, but the fork warns about them at launch —
-  fork delta 4.)
+  fork delta 3.)
 - Tools that bypass the proxy send the fake token and fail GitHub
   auth — a functionality caveat, not a leak.
 
@@ -609,13 +642,16 @@ there with a few tweaks to the settings files:
   are macOS-only and ignored on Linux. `network.allowUnixSockets` is
   also macOS-only (seccomp can't filter by path), so the SSH
   agent-forwarding allowance doesn't apply.
-- **`denyReadAlways` works on Linux for literal paths and narrow globs
-  only.** Bubblewrap doesn't support regex/glob matching, so `srt`
-  expands globs to concrete paths at config-load time. A pattern like
-  `/**/.env*` (rooted at `/`) is rejected by the expander as "too
-  broad" and silently skipped with a warning. To get coverage under
-  the directories you care about, narrow the globs:
-  `~/src/**/.env*`, `~/projects/**/credentials`, etc.
+- **Re-verify the credential globs in `denyRead` on Linux.**
+  Bubblewrap doesn't support regex/glob matching, so `srt` expands
+  globs to concrete paths when it starts. Under 0.0.70 a pattern like
+  `/**/.env*` (rooted at `/`) was rejected as "too broad" and skipped
+  with a warning. Upstream 0.0.77 reworked the expansion
+  (`read-deny-glob.ts` collapses matches to directories and mounts
+  where paths resolve). **This config hasn't been verified on Linux
+  since then**, so probe that `.env` and key files are actually denied
+  before relying on it. If the root-anchored globs are still skipped,
+  narrow them: `~/src/**/.env*`, `~/projects/**/credentials`, etc.
 
 For the shell functions: the `security find-generic-password` block is
 macOS Keychain-specific. Claude Code on Linux stores credentials
@@ -636,7 +672,7 @@ if/when the current posture isn't enough:
   masking is in use (see [gh and glab](#gh-and-glab)), but *file*
   masking is Linux-only — on macOS Seatbelt can't redirect reads, so
   `mask` degrades to plain `deny`, and it takes explicit paths rather
-  than broad globs. `denyReadAlways` already provides everything it
+  than broad globs. The `denyRead` globs already provide everything it
   could offer here, and the Keychain→`~/.claude/.credentials.json`
   seeding scheme remains the right approach on a Mac.
 - **URL/path-level filtering.** Allow/deny today is host-only. `srt`'s

@@ -550,8 +550,8 @@
         </p>
       </div>
       <div class="stamp">
-        <strong>v1.0</strong>
-        Effective May 2026<br/>
+        <strong>v1.1</strong>
+        Effective August 2026<br/>
         Owner: LTIC<br/>
         Review: annually
       </div>
@@ -686,8 +686,9 @@
           chat — refer to them by name and let your code load them.
         </span></li>
         <li><span class="n">4.</span><span>
-          <strong>Mind the border.</strong> All major AI services process data outside Canada — that's
-          a FIPPA issue for identifiable info. Sanitize first, or use an approved tool.
+          <strong>Mind the border.</strong> Consumer AI tiers process data outside Canada — a FIPPA
+          issue for identifiable info. Some enterprise tiers offer Canadian at-rest residency, but
+          inference still runs in the US. Sanitize first, or use an approved tool.
         </span></li>
         <li><span class="n">5.</span><span>
           <strong>Sandbox agentic tools.</strong> Run Claude Code, Cursor, or similar in a DevContainer,
@@ -700,9 +701,10 @@
           not the organization.
         </span></li>
         <li><span class="n">7.</span><span>
-          <strong>Exclude with ignore files.</strong> Add a <code>.copilotignore</code> or
-          <code>.cursorignore</code> (mirrors <code>.gitignore</code> syntax) to block secrets,
-          config files, and credential stores from the agent's indexing context.
+          <strong>Exclude sensitive paths.</strong> Cursor: a <code>.cursorignore</code>
+          (<code>.gitignore</code> syntax, best-effort). Copilot: content exclusion is set in GitHub
+          repo / org settings (paid plans) — and Copilot's agent modes don't honor it, so don't rely
+          on exclusions as your only guard.
         </span></li>
         <li><span class="n">8.</span><span>
           <strong>Disable autorun.</strong> Turn off autonomous execution modes in agentic tools.
@@ -751,7 +753,7 @@
     <section class="vendors-section" aria-labelledby="vendors-h">
       <header class="vendors-head">
         <h3 id="vendors-h">AI tools at a glance <span class="kicker">what the policies actually say</span></h3>
-        <span class="verified">verified May 2026</span>
+        <span class="verified">verified August 2026</span>
       </header>
       <div class="vendor-grid">
 
@@ -771,7 +773,7 @@
                 Team / Enterprise / API never trained on.  <strong>Always validate that "Help improve Claude" is disabled.</strong>
                 Retention: <strong>30&nbsp;days</strong> default, <strong>5&nbsp;years</strong> if opted in.
                 <strong>Keeping chat history ≠ training</strong> — they're separate settings.
-                Safety-flagged chats reviewed regardless; data processed in the <strong>US</strong>.
+                Safety-flagged chats may be reviewed <strong>and used for training</strong> regardless; data processed in the <strong>US</strong>.
               </p>
             </section>
             <section>
@@ -779,15 +781,17 @@
               <p>
                 Stores session transcripts in <strong>plaintext</strong> at
                 <code>~/.claude/projects/</code> for 30 days — anything you paste lives there too. Tune
-                with <code>cleanupPeriodDays</code>. Running <code>/feedback</code> uploads a transcript
-                (5y retention) <strong>and is used for training regardless of your opt-out</strong>;
-                disable with <code>DISABLE_FEEDBACK_COMMAND=1</code>.
+                with <code>cleanupPeriodDays</code>. Running <code>/feedback</code> (also <code>/bug</code>,
+                <code>/share</code>) uploads a transcript (5y retention) <strong>usable for training
+                regardless of your opt-out</strong>; disable with <code>DISABLE_FEEDBACK_COMMAND=1</code>.
+                The "How is Claude doing?" survey's optional transcript share is kept 6 months but never
+                trains; silence it with <code>CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1</code>.
               </p>
             </section>
             <section>
               <h5>⚠ claude.ai (web / app)</h5>
               <p>
-                <strong>Memory</strong> (all plans): Settings → Capabilities →
+                <strong>Memory</strong> (all plans, <strong>on by default</strong>): Settings → Capabilities →
                 <em>"Generate memory from chat history"</em>. Pause, reset, or view what's stored.
                 Memory inherits chat retention; Anthropic's docs don't explicitly address whether memory
                 entries themselves train models — assume in-scope if your training toggle is on.
@@ -805,7 +809,7 @@
             <strong>Sources&nbsp;—</strong>
             <span class="src"><a href="https://privacy.claude.com/en/articles/10023580-is-my-data-used-for-model-training">Is my data used for model training?</a> (Mar 2026)</span>
             <span class="src"><a href="https://code.claude.com/docs/en/data-usage">Claude Code: Data Usage</a></span>
-            <span class="src"><a href="https://www.anthropic.com/legal/privacy">Anthropic Privacy Policy</a> (Jan 2026)</span>
+            <span class="src"><a href="https://www.anthropic.com/legal/privacy">Anthropic Privacy Policy</a> (Jun 2026)</span>
             <span class="src"><a href="https://www.anthropic.com/legal/commercial-terms">Anthropic Commercial Terms</a> (Jun 2025)</span>
           </div>
         </article>
@@ -813,8 +817,8 @@
         <!-- GEMINI -->
         <article class="vendor-card">
           <div class="v-head">
-            <h4>Gemini · Gemini CLI</h4>
-            <span class="v-tag">Apps · CLI · Workspace · Vertex</span>
+            <h4>Gemini · Gemini CLI · Antigravity</h4>
+            <span class="v-tag">Apps · CLI · Antigravity · Workspace · Vertex</span>
           </div>
           <div class="v-grid">
             <section>
@@ -830,21 +834,23 @@
               <p>
                 <strong>Personal accounts (default):</strong> with <strong>Keep Activity ON</strong>,
                 chats may be used to train models and a subset is reviewed by humans — toggle off in
-                account settings to stop both.
+                account settings to stop training use (safety / abuse review can still occur).
                 <strong>Workspace / school accounts:</strong> training off by default, no human review
                 without permission. Reviewed chats kept up to <strong>3 years</strong>;
                 <strong>72 hours</strong> minimum either way.
               </p>
             </section>
             <section>
-              <h5>⚠ Gemini CLI &mdash; auth method matters</h5>
+              <h5>⚠ Gemini CLI &amp; Antigravity &mdash; auth matters</h5>
               <p>
-                <strong>Trained on by default:</strong> personal Google account; free Gemini API key.
-                <strong>Personal account:</strong> disabling the CLI's <strong>Usage Statistics</strong>
-                setting stops prompt / code collection (it covers both telemetry and training data).
-                <strong>Free API key:</strong> training continues regardless — the Gemini API
-                Additional Terms govern data sent to the API endpoint and have no opt-out.
-                <strong>Not trained on:</strong> Workspace / Enterprise account, paid Gemini API, Vertex AI.
+                <strong>Gemini CLI / Code Assist:</strong> requires Workspace / Enterprise auth, a paid
+                Gemini API key, or Vertex AI — <strong>none trained on</strong>. There is no
+                personal-account sign-in.
+                <strong>Free Gemini API key:</strong> trained on with <strong>no opt-out</strong> —
+                the Gemini API Additional Terms have no off switch.
+                <strong>Antigravity</strong> (Google's consumer agentic IDE): individual accounts are
+                trained on <strong>by default</strong> — opt out in its settings; it can also route
+                requests to Anthropic models under separate terms.
               </p>
             </section>
           </div>
@@ -854,9 +860,10 @@
           </p>
           <div class="v-src">
             <strong>Sources&nbsp;—</strong>
-            <span class="src"><a href="https://support.google.com/gemini/answer/13594961">Gemini Apps Privacy Hub</a> (May 2026)</span>
-            <span class="src"><a href="https://google-gemini.github.io/gemini-cli/docs/tos-privacy.html">Gemini CLI ToS &amp; Privacy</a></span>
-            <span class="src"><a href="https://knowledge.workspace.google.com/admin/gemini/generative-ai-in-google-workspace-privacy-hub">Gen-AI in Workspace Privacy Hub</a></span>
+            <span class="src"><a href="https://support.google.com/gemini/answer/13594961">Gemini Apps Privacy Hub</a> (Aug 2026)</span>
+            <span class="src"><a href="https://github.com/google-gemini/gemini-cli/blob/main/docs/resources/tos-privacy.md">Gemini CLI ToS &amp; Privacy</a></span>
+            <span class="src"><a href="https://antigravity.google/terms">Antigravity Terms</a></span>
+            <span class="src"><a href="https://knowledge.workspace.google.com/admin/generative-ai/generative-ai-in-google-workspace-privacy-hub">Gen-AI in Workspace Privacy Hub</a></span>
             <span class="src"><a href="https://docs.cloud.google.com/gemini/docs/discover/data-governance">Gemini for Google Cloud — Data Governance</a></span>
           </div>
         </article>
@@ -865,17 +872,19 @@
         <article class="vendor-card">
           <div class="v-head">
             <h4>ChatGPT · Codex</h4>
-            <span class="v-tag">Free · Plus · Pro · Team · Enterprise · Edu · API</span>
+            <span class="v-tag">Free · Go · Plus · Pro · Business · Enterprise · Edu · API</span>
           </div>
           <div class="v-grid">
             <section>
               <h5>⚠ Default depends on plan</h5>
               <p>
-                <strong>Free, Plus, Pro:</strong> training is <strong>ON by default</strong>. Turn it off at
-                Settings → Data Controls → <em>Improve the model for everyone</em>.
-                <strong>Team, Enterprise, Edu, API:</strong> training is <strong>OFF by default</strong>
-                (no toggle required). <strong>Caveat:</strong> submitting thumbs-up/down feedback on a chat
-                opts that entire conversation into training regardless of the toggle.
+                <strong>Free, Go, Plus, Pro:</strong> training is <strong>ON by default</strong>. Turn it off at
+                Settings → Data Controls → <em>Improve the model for everyone</em> (the toggle also covers
+                Codex tasks; voice mode has its own).
+                <strong>Business, Enterprise, Edu, API:</strong> training is <strong>OFF by default</strong>
+                (no toggle required). <strong>Caveats:</strong> thumbs-up/down feedback makes that entire
+                conversation usable for training regardless of the toggle; Free / Go tiers show
+                <strong>ads</strong> targeted using your past chats (separate ad-personalization toggle).
               </p>
             </section>
             <section>
@@ -889,17 +898,19 @@
             <section>
               <h5>⚠ Memory feature</h5>
               <p>
-                Persists context (your facts, preferences) <strong>across all chats</strong>.
-                <strong>Memory and training are independent toggles</strong> — you can disable memory while
-                training stays on, or vice versa. Memory controls: Settings → Personalization → Memory
-                (clear, disable saving, disable reference). Memorized content is in scope for training
-                only if "Improve the model for everyone" is on.
+                Auto-builds a <strong>memory summary</strong> from your chats, files, and connected apps,
+                referenced <strong>across all chats</strong>.
+                <strong>Memory and training are independent toggles</strong>. Controls:
+                Settings → Personalization → Memory (clear, disable saving, disable reference).
+                Deleting memories doesn't delete the source chats — memory can rebuild from history if
+                re-enabled. Memorized content is in scope for training only if
+                "Improve the model for everyone" is on.
               </p>
             </section>
           </div>
           <p class="iss-line">
             <strong>ISS U1 ceiling on this plan — Low.</strong>
-            Medium use needs Team / Enterprise / Edu + an Assessment of Use Case + ISS U9 / SR#26 review where necessary.
+            Medium use needs Business / Enterprise / Edu + an Assessment of Use Case + ISS U9 / SR#26 review where necessary.
           </p>
           <div class="v-src">
             <strong>Sources&nbsp;—</strong>

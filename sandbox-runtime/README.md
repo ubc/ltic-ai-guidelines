@@ -44,7 +44,10 @@ too much friction.
 ### Shared between both
 
 - **`allowAllDomains: true`** — no domain allow-list; requires the
-  forked `srt` ([details](DETAILS.md#the-fork)).
+  forked `srt` ([details](DETAILS.md#the-fork)). Covers hostnames
+  only: IP literals and `localhost` still need an `allowedDomains`
+  entry, and cloud metadata (`169.254.169.254`) and host loopback
+  services are refused — including hostnames that *resolve* there.
 - **`deniedDomains`** — explicit denies beat allow-all:
   `gist.github.com` closes one easy exfil channel, and the port-scoped
   `*:25` / `*:587` / `*:465` entries block direct SMTP (a quiet exfil
@@ -60,13 +63,15 @@ too much friction.
 - **`credentials.envVars` masks `GH_TOKEN`** — the sandbox sees a fake
   token; the proxy injects the real one only on egress to
   `github.com` / `*.github.com` ([details](DETAILS.md#gh-and-glab)).
-- **`denyReadAlways`** — credential globs (`/**/.env*`, `/**/*.pem`,
-  `/**/id_*`, …) that deny reads everywhere, even inside `allowRead`'d
-  paths. Fork-only field; patterns need a leading `/` to be global.
+- **Credential globs in `denyRead`** — `/**/.env*`, `/**/*.pem`,
+  `/**/id_rsa*`, … deny reads everywhere, even inside `allowRead`'d
+  paths (upstream srt ≥0.0.77 lets a `denyRead` glob beat a broader
+  `allowRead` region). Patterns need a leading `/` to be global.
   Known-safe names the globs catch by accident — `.env.example` and
-  friends, `id_*.pub` — are carved back out via
-  **`denyReadAlwaysExcept`** (denyall; fork `0.0.70-ltic.5`) / glob
-  `allowRead` entries (allowall)
+  friends, public keys — are carved back out with narrower `allowRead`
+  globs. A carve-out only counts if it has the deny glob's shape:
+  `/**/id_ed25519*.pub` carves out of `/**/id_ed25519*`, but
+  `/**/id_*.pub` doesn't
   ([details](DETAILS.md#filesystem-rule-mechanics)).
 - **`denyWrite`** for `~/.claude/settings*.json` and
   `~/.claude/CLAUDE.md` — closes hook-installation persistence vectors
@@ -88,11 +93,9 @@ too much friction.
 
 ### 1. Install the patched `srt` from the fork
 
-Upstream `srt` has no allow-all-egress mode and ignores glob denies
-inside `allowRead` regions; the fork adds `allowAllDomains` and
-`denyReadAlways` to fix both (upstream PRs
-[#283](https://github.com/anthropic-experimental/sandbox-runtime/pull/283)
-and [#284](https://github.com/anthropic-experimental/sandbox-runtime/pull/284)),
+Upstream `srt` has no allow-all-egress mode; the fork adds
+`allowAllDomains` to fix that (upstream PR
+[#283](https://github.com/anthropic-experimental/sandbox-runtime/pull/283)),
 plus three more deltas: the CLI streams sandbox violations to a file
 the agent can be shown
 ([pipeline](DETAILS.md#the-violations-pipeline)), unrecognized
@@ -113,7 +116,7 @@ Verify the install:
 
 ```bash
 which srt          # → ~/.nvm/versions/node/<ver>/bin/srt
-srt --version      # → 0.0.70-ltic.5   (the -ltic suffix confirms the patched fork)
+srt --version      # → 0.0.77-ltic.1   (the -ltic suffix confirms the patched fork)
 ```
 
 Also install socat — it's what carries sandboxed SSH through the
@@ -240,6 +243,59 @@ ccx_permissive   # deny-list sandbox
 number for "last N minutes" of history). Useful when something inside
 the sandbox fails with EPERM and you want to know why.
 
+## Upgrading from 0.0.70
+
+If you're on `0.0.70-ltic.N`, the fork has been synced to upstream
+`0.0.77`. The shell functions are unchanged and there's nothing new to
+`brew install`. Two things change: the `srt` binary and both config
+files.
+
+1. **Rebuild and reinstall `srt`** from your clone of the fork:
+
+   ```bash
+   cd path/to/sandbox-runtime   # your clone of github.com/ubc/sandbox-runtime
+   git checkout ltic-main
+   git pull
+   npm install
+   npm run build
+   npm install -g .
+   srt --version                # → 0.0.77-ltic.1
+   ```
+
+2. **Replace both config files** — or, if you customized your copies,
+   migrate them by hand. **Don't skip this for the denyall config:**
+   the fork-only `denyReadAlways` / `denyReadAlwaysExcept` fields are
+   gone, and an un-migrated config silently loses every credential
+   glob. The launch-time "unrecognized settings key" warning is the
+   only signal.
+
+   ```bash
+   cp .srt-claude-denyall.json .srt-claude-allowall.json ~/
+   ```
+
+   To migrate a customized copy instead:
+   - move every `denyReadAlways` entry into `denyRead`, and every
+     `denyReadAlwaysExcept` entry into `allowRead`, then delete both
+     keys;
+   - next to `/**/id_*.pub` in `allowRead`, add `/**/id_rsa*.pub` and
+     `/**/id_ed25519*.pub` (both configs). Without these, public keys
+     stay denied ([why](DETAILS.md#filesystem-rule-mechanics)).
+
+   Then check that `srt --settings ~/.srt-claude-denyall.json -- true`
+   prints no "unrecognized" warning.
+
+3. **Optional:** check that cloud metadata is refused (it was
+   forwarded before):
+
+   ```bash
+   srt --settings ~/.srt-claude-denyall.json -- \
+     curl --noproxy '' -s -o /dev/null -w '%{http_code}\n' http://169.254.169.254/
+   # 403
+   ```
+
+Other upstream changes are listed under [the
+fork](DETAILS.md#upstream-changes-in-0077).
+
 ## Upgrading from 0.0.62
 
 If you set this up when the fork was at `0.0.62-ltic.1`, four things
@@ -255,7 +311,7 @@ functions, and two new one-time setup steps. In order:
    npm install
    npm run build
    npm install -g .
-   srt --version                # → 0.0.70-ltic.5
+   srt --version                # → 0.0.77-ltic.1
    ```
 
 2. **Install socat** (new dependency — carries sandboxed SSH through
@@ -267,9 +323,8 @@ functions, and two new one-time setup steps. In order:
    ```
 
 3. **Replace both config files.** The new versions add `tlsTerminate`,
-   `GH_TOKEN` masking (`credentials.envVars`), `denyReadAlways` /
-   `denyReadAlwaysExcept`, `deniedDomainReasons`, and
-   `ignoreViolations`. If you customized your copies (extra `allowRead`
+   `GH_TOKEN` masking (`credentials.envVars`), credential globs that
+   beat `allowRead`, `deniedDomainReasons`, and `ignoreViolations`. If you customized your copies (extra `allowRead`
    paths, etc.), re-apply those edits on top of the new files:
 
    ```bash
@@ -338,9 +393,21 @@ posture it affects.
   ones.** *(both)* The system CA bundle is handled automatically
   (`tlsTerminate` injects srt's own bundle), and known-safe names are
   already excepted: `.env.example`/`.env.sample`/`.env.template`/
-  `.env.dist` and `id_*.pub` are readable. For anything else, add it
-  to the exception list or rename/copy to `.crt`/`.pem.txt`
+  `.env.dist` and public keys (`id_*.pub`) are readable. For anything
+  else, add a narrower glob or exact path to `allowRead` or
+  rename/copy to `.crt`/`.pem.txt`
   ([details](DETAILS.md#filesystem-rule-mechanics)).
+
+- **A deny glob also hides everything inside a matching folder.**
+  *(both)* A Python venv named `.env/` matches `/**/.env*`, so the
+  whole venv is unreadable. The same goes for a `credentials/` folder.
+  Rename the venv to `.venv`
+  ([details](DETAILS.md#filesystem-rule-mechanics)).
+
+- **A broken settings file stops srt from starting.** *(both)* Since
+  upstream `0.0.77`, an invalid, empty or unreadable `--settings` file
+  makes srt exit 1 instead of silently running with defaults. Check
+  it with `jq . ~/.srt-claude-denyall.json`.
 
 - **Sandbox denials are explained in-session.** *(both)* The
   violations hook surfaces each denial — with its configured reason —
@@ -389,7 +456,8 @@ posture it affects.
   for per-use confirmation, before launching) and the connection
   tunnels through the proxy via srt's socat `ProxyCommand`.
   `IdentitiesOnly yes` setups work as-is — public keys are readable
-  via the `id_*.pub` exception, and the agent signs.
+  via the `id_rsa*.pub` / `id_ed25519*.pub` carve-outs, and the agent
+  signs.
   Plain `ssh` outside git: `eval "$GIT_SSH_COMMAND git@github.com"`
   ([details](DETAILS.md#ssh)). While a session runs, sandboxed code
   can authenticate as you to anything the agent holds keys for —
