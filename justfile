@@ -38,3 +38,6 @@ pages: pdf
 
 # regenerate preview AND verify page count — run before commit
 check: preview pages
+
+# Sandboxed Claude Code setup/verification: `just sandbox::setup`, `just sandbox::check`
+mod sandbox 'sandbox-runtime-config'

@@ -1,0 +1,131 @@
+# Sandboxed Claude Code (ccx) — zsh.
+# Installed to ~/.config/srt/ccx.zsh by `just install-shell` and sourced from
+# ~/.zshrc. Design notes: DETAILS.md in ltic-ai-guidelines/sandbox-runtime-config.
+#
+# Credential seeding: the sandbox can't read the macOS Keychain, so on every
+# launch we copy Claude's OAuth credential from the Keychain into
+# ~/.claude/.credentials.json (Claude falls back to that file when the
+# Keychain read fails). The refresh token is nulled first: only the ~8h
+# access token touches disk, and the sandbox never rotates the Keychain's
+# refresh token. When the token expires: exit, run `claude` once outside the
+# sandbox, relaunch. See DETAILS.md#credential-plumbing.
+
+# Generate the persistent MITM CA once. srt mints per-host leaf certs from
+# it instead of an ephemeral per-session CA, so it can be trusted ONCE in
+# the login keychain (`just trust-ca`) — required for tools that verify via
+# trustd (gh and other Go binaries). The key stays mode 600 and is
+# sandbox-unreadable (the /**/*.key deny glob).
+function _ccx_ensure_ca {
+  local cadir="$HOME/.config/srt"
+  if [[ ! -f "$cadir/mitm-ca.crt" || ! -f "$cadir/mitm-ca.key" ]]; then
+    mkdir -p "$cadir"
+    openssl req -x509 -newkey rsa:2048 -sha256 -days 3650 -nodes \
+      -keyout "$cadir/mitm-ca.key" -out "$cadir/mitm-ca.crt" \
+      -subj "/CN=srt MITM CA ($USER)" \
+      -addext "basicConstraints=critical,CA:TRUE" \
+      -addext "keyUsage=critical,keyCertSign,cRLSign" 2>/dev/null
+    chmod 600 "$cadir/mitm-ca.key"
+  fi
+}
+
+# _ccx_run <settings.json> <command...>: run <command> inside the sandbox.
+# ccx/ccx_permissive pass `claude`; ccx_exec passes whatever you give it.
+function _ccx_run {
+  local settings="$1"; shift
+  # srt sets TMPDIR=/tmp/claude inside and auto-allows writes there; a
+  # per-PID subdir keeps concurrent sessions from trampling each other.
+  local td="/tmp/claude/ccx-$$"
+  mkdir -p "$td"
+  chmod 700 "$td"
+
+  # No CA-bundle staging: with network.tlsTerminate in the configs, srt
+  # builds its own trust bundle and sets SSL_CERT_FILE / CURL_CA_BUNDLE /
+  # CARGO_HTTP_CAINFO / GIT_SSL_CAINFO / REQUESTS_CA_BUNDLE itself. Don't
+  # export those here — wrapper exports would shadow srt's and break TLS.
+
+  # gh keeps its token in the Keychain (unreadable inside). Pull it out here;
+  # the configs mask it (credentials.envVars): the sandbox only ever sees a
+  # fake token and the proxy swaps in the real one on egress to github.com.
+  local gh_token=""
+  if command -v gh >/dev/null 2>&1; then
+    gh_token=$(gh auth token 2>/dev/null)
+  fi
+
+  # Seed ~/.claude/.credentials.json (see header). A pure file-store user
+  # (no Keychain entry) is left untouched. $$-suffixed temp + rename keeps
+  # the write atomic — claude re-reads the store mid-session; umask 077
+  # keeps the token from ever being briefly world-readable.
+  local creds="$HOME/.claude/.credentials.json"
+  local cred_json=""
+  cred_json=$(security find-generic-password -a "$USER" -w -s "Claude Code-credentials" 2>/dev/null)
+  if [[ -n "$cred_json" ]]; then
+    local tmp="$creds.tmp.$$"
+    if print -nr -- "$cred_json" | (umask 077; jq -c '.claudeAiOauth.refreshToken = null' > "$tmp"); then
+      mv -f "$tmp" "$creds"
+    else
+      rm -f "$tmp"
+    fi
+  fi
+
+  _ccx_ensure_ca
+  local cadir="$HOME/.config/srt"
+
+  # Per-launch config copy, for the two settings that can't be static JSON:
+  # - SSH agent forwarding: the launchd socket path changes every login
+  #   session, and Seatbelt gates Unix sockets via network.allowUnixSockets.
+  #   Trade-off: sandboxed code can authenticate as you while the session
+  #   runs — mitigate with ssh-add -c or hardware-backed keys.
+  # - The CA paths (tlsTerminate does no tilde expansion).
+  local cfg="$td/settings.json"
+  jq --arg sock "${SSH_AUTH_SOCK:-}" --arg cadir "$cadir" '
+    (if $sock != "" then .network.allowUnixSockets = [$sock] else . end)
+    | .network.tlsTerminate.caCertPath = ($cadir + "/mitm-ca.crt")
+    | .network.tlsTerminate.caKeyPath  = ($cadir + "/mitm-ca.key")
+  ' "$settings" > "$cfg"
+
+  # pnpm_config_store_dir pins pnpm's global store; without it pnpm's
+  # store probe fails inside and silently creates a per-project .pnpm-store/.
+  CLAUDE_CODE_TMPDIR="$td" \
+  DISABLE_FEEDBACK_COMMAND=1 \
+  CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 \
+  GH_TOKEN="$gh_token" \
+  SSH_AUTH_SOCK="${SSH_AUTH_SOCK:-}" \
+  pnpm_config_store_dir="$HOME/Library/pnpm/store" \
+    srt --settings "$cfg" -- "$@"
+}
+
+function ccx            { _ccx_run ~/.srt-claude-denyall.json  claude "$@" }
+function ccx_permissive { _ccx_run ~/.srt-claude-allowall.json claude "$@" }
+
+# Run any command inside the sandbox exactly as claude is launched — handy
+# for "does X work inside?" (e.g. `ccx_exec gh api user`).
+function ccx_exec            { _ccx_run ~/.srt-claude-denyall.json  "$@" }
+function ccx_permissive_exec { _ccx_run ~/.srt-claude-allowall.json "$@" }
+
+# Tail / inspect macOS sandbox-exec denials. Pass a number for "last N
+# minutes" of historical log; no argument streams live events.
+function srtlog {
+  local NOISE='ampdaemon|tccd|amfid|nsurlsessiond|cloudd|callservicesd|searchpartyuseragent|biomesyncd|knowledge-agent|appleaccountd|geod|locationd|mediaanalysisd|photoanalysisd|routined|trustd|symptomsd|networkserviceproxy|WebKit|sharingd|parsecd|imagent|identityservicesd|distnoted|UserEventAgent|coreduetd|contextstored|suggestd|powerd|bluetoothd'
+
+  if [[ "${1:-}" =~ ^[0-9]+$ ]]; then
+    log show --style compact --last "${1}m" \
+      --predicate 'sender == "Sandbox" OR process == "sandbox-exec"' \
+      | grep -v -E "$NOISE"
+  else
+    log stream --style compact \
+      --predicate 'sender == "Sandbox" OR process == "sandbox-exec"' \
+      | grep --line-buffered -v -E "$NOISE"
+  fi
+}
+
+# ONLY needed if you installed srt with `pnpm install -g .` instead of npm.
+# pnpm puts its global binaries in a separate dir from nvm's node bin so
+# they survive nvm switching, but that dir isn't on $PATH by default.
+# `pnpm setup` writes this block automatically the first time you install
+# pnpm — if it's already in your shell config you don't need it here.
+#
+# export PNPM_HOME="$HOME/Library/pnpm"
+# case ":$PATH:" in
+#   *":$PNPM_HOME/bin:"*) ;;
+#   *) export PATH="$PNPM_HOME/bin:$PATH" ;;
+# esac
