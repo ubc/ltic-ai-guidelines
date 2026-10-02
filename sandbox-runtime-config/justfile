@@ -1,0 +1,218 @@
+# Sandboxed Claude Code on macOS — setup, upgrade and verification.
+# Requires: just (brew install just). Run from a normal terminal, not from
+# inside a ccx session (nested srt won't launch, and ~/.claude/settings.json
+# is write-denied inside the sandbox).
+
+set shell := ["bash", "-cu"]
+
+dir      := justfile_directory()
+home     := home_directory()
+# Where the fork gets cloned/built. Override: SRT_SRC=~/code/sandbox-runtime just install-srt
+srt_src  := env("SRT_SRC", home / "src/sandbox-runtime")
+fork_url := "https://github.com/ubc/sandbox-runtime.git"
+shell_kind := if env("SHELL", "/bin/zsh") =~ 'zsh' { "zsh" } else { "bash" }
+
+# show available recipes
+default:
+    @just --list --unsorted
+
+# first-time setup, start to finish
+setup: deps install-srt install-configs install-shell trust-ca install-hook check
+
+# after `git pull` of this repo or the fork: rebuild srt, refresh configs/shell/hook, verify
+upgrade: install-srt install-configs install-shell install-hook check
+
+# install socat + jq via Homebrew; verify node/npm/openssl are present
+deps:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    command -v brew >/dev/null || { echo "Homebrew is required (https://brew.sh)"; exit 1; }
+    for f in socat jq; do
+      command -v "$f" >/dev/null && echo "  ok   $f" || brew install "$f"
+    done
+    for t in node npm openssl; do
+      command -v "$t" >/dev/null && echo "  ok   $t" || { echo "  FAIL $t not on PATH — install it (node via nvm is recommended) and re-run"; exit 1; }
+    done
+    command -v gh >/dev/null && echo "  ok   gh" || echo "  note gh not found — GitHub token masking will be skipped (brew install gh to enable)"
+
+# clone/update the ltic-main fork, build it, install `srt` globally
+install-srt:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ ! -d "{{srt_src}}/.git" ]; then
+      echo "cloning fork into {{srt_src}}"
+      git clone "{{fork_url}}" "{{srt_src}}"
+    fi
+    cd "{{srt_src}}"
+    git checkout ltic-main
+    git pull --ff-only
+    npm install
+    npm run build
+    prefix="$(npm prefix -g)"
+    if [ ! -w "$prefix/lib/node_modules" ] || [ ! -w "$prefix/bin" ]; then
+      echo "npm's global prefix ($prefix) isn't writable by you (non-nvm Node?)."
+      echo "Either: sudo npm install -g .   (from {{srt_src}})"
+      echo "    or: npm config set prefix ~/.local && export PATH=\"\$HOME/.local/bin:\$PATH\", then re-run"
+      exit 1
+    fi
+    npm install -g .
+    hash -r 2>/dev/null || true
+    v="$(srt --version)"
+    case "$v" in
+      *-ltic*) echo "  ok   srt $v ($(command -v srt))" ;;
+      *) echo "  FAIL srt on PATH is $v — not the fork. Check \`which srt\` vs $prefix/bin"; exit 1 ;;
+    esac
+
+# copy both posture configs to ~ (backs up a differing existing copy to *.bak)
+install-configs:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for f in .srt-claude-denyall.json .srt-claude-allowall.json; do
+      jq . "{{dir}}/$f" >/dev/null
+      if [ -f ~/"$f" ] && ! cmp -s "{{dir}}/$f" ~/"$f"; then
+        cp ~/"$f" ~/"$f.bak"
+        echo "  note ~/$f differed — previous copy saved as ~/$f.bak"
+      fi
+      cp "{{dir}}/$f" ~/"$f"
+      echo "  ok   ~/$f"
+    done
+
+# install the ccx shell functions to ~/.config/srt and source them from your rc file
+install-shell shell=shell_kind:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{shell}}" in
+      zsh)  rc=~/.zshrc; f=ccx.zsh;  src="{{dir}}/.zshrc.example" ;;
+      bash) rc=~/.bash_profile; f=ccx.bash; src="{{dir}}/.bashrc.example" ;;
+      *) echo "shell must be zsh or bash"; exit 1 ;;
+    esac
+    mkdir -p ~/.config/srt
+    cp "{{dir}}/.zshrc.example"  ~/.config/srt/ccx.zsh
+    cp "{{dir}}/.bashrc.example" ~/.config/srt/ccx.bash
+    echo "  ok   ~/.config/srt/ccx.zsh, ~/.config/srt/ccx.bash"
+    touch "$rc"
+    if grep -q 'config/srt/ccx\.' "$rc"; then
+      echo "  ok   $rc already sources ~/.config/srt/$f"
+    else
+      printf '\n# Sandboxed Claude Code (ccx) — ltic-ai-guidelines/sandbox-runtime-config\nsource "$HOME/.config/srt/%s"\n' "$f" >> "$rc"
+      echo "  ok   added source line to $rc"
+    fi
+    if grep -qE '^\s*(function\s+_ccx_run\b|_ccx_run\s*\(\))' "$rc"; then
+      echo "  WARN $rc still defines _ccx_run inline (pre-justfile install)."
+      echo "       Delete that block — it shadows the sourced file — then: source $rc"
+    else
+      echo "  next source $rc   (or open a new terminal)"
+    fi
+
+# generate the persistent MITM CA if missing and trust it in your login keychain (one-time)
+trust-ca:
+    #!/usr/bin/env bash
+    set -eo pipefail
+    set +u
+    source "{{dir}}/.bashrc.example"
+    _ccx_ensure_ca
+    crt=~/.config/srt/mitm-ca.crt
+    if security verify-cert -c "$crt" -p ssl >/dev/null 2>&1; then
+      echo "  ok   $crt already trusted"
+    else
+      echo "  macOS will prompt for your password to trust $crt (SSL, your user only)"
+      security add-trusted-cert -p ssl -k ~/Library/Keychains/login.keychain-db "$crt"
+      echo "  ok   trusted $crt"
+    fi
+
+# install the violations hook and register it in ~/.claude/settings.json
+install-hook:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p ~/.claude/hooks
+    cp "{{dir}}/srt-violations.mjs" ~/.claude/hooks/
+    echo "  ok   ~/.claude/hooks/srt-violations.mjs"
+    s=~/.claude/settings.json
+    [ -f "$s" ] || echo '{}' > "$s"
+    jq . "$s" >/dev/null || { echo "  FAIL $s is not valid JSON — fix it first"; exit 1; }
+    tmp="$s.tmp.$$"
+    jq --arg cmd 'node "$HOME/.claude/hooks/srt-violations.mjs"' '
+      .hooks //= {} | .hooks.PostToolUse //= [] |
+      if ([.hooks.PostToolUse[]? | .hooks[]? | .command // "" | select(test("srt-violations\\.mjs"))] | length) > 0
+      then .
+      else .hooks.PostToolUse += [{matcher: "Bash", hooks: [{type: "command", command: $cmd, timeout: 10}]}]
+      end' "$s" > "$tmp"
+    if cmp -s "$s" "$tmp"; then
+      rm -f "$tmp"; echo "  ok   hook already registered in $s"
+    else
+      cp "$s" "$s.bak"; mv -f "$tmp" "$s"
+      echo "  ok   registered PostToolUse(Bash) hook in $s (backup: $s.bak)"
+    fi
+
+# verify the whole install: tools, configs, egress, CA trust, hook, and a gh smoke test
+check:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    failed=0
+    ok()   { printf '  ok   %s\n' "$1"; }
+    fail() { printf '  FAIL %s\n' "$1"; failed=1; }
+    deny=~/.srt-claude-denyall.json
+    allow=~/.srt-claude-allowall.json
+
+    echo "1. tools"
+    for t in srt socat jq node openssl; do
+      command -v "$t" >/dev/null && ok "$t" || fail "$t not on PATH (just deps / just install-srt)"
+    done
+    v="$(srt --version 2>/dev/null || true)"
+    case "$v" in *-ltic*) ok "srt $v is the fork" ;; *) fail "srt --version = '$v' — expected an -ltic build (just install-srt)" ;; esac
+
+    echo "2. configs"
+    for c in "$deny" "$allow"; do
+      [ -f "$c" ] && jq . "$c" >/dev/null 2>&1 && ok "$c parses" || fail "$c missing or invalid (just install-configs)"
+    done
+
+    echo "3. configs load cleanly"
+    for c in "$deny" "$allow"; do
+      out="$(srt --settings "$c" -- true 2>&1)"; rc=$?
+      if [ $rc -ne 0 ]; then fail "srt --settings $c exited $rc: $out"
+      elif grep -qi unrecognized <<<"$out"; then fail "srt warned about an unrecognized key in $c: $out"
+      else ok "$(basename "$c") loads with no warnings"; fi
+    done
+
+    echo "4. egress (allowAllDomains honoured, TLS bundle injected)"
+    code="$(srt --settings "$deny" -- curl -s -o /dev/null -w '%{http_code}' --max-time 15 https://example.com/ 2>/dev/null || true)"
+    [ "$code" = "200" ] && ok "https://example.com/ → 200" || fail "https://example.com/ → '$code' (expected 200)"
+
+    echo "5. cloud metadata refused"
+    code="$(srt --settings "$deny" -- curl --noproxy '' -s -o /dev/null -w '%{http_code}' --max-time 15 http://169.254.169.254/ 2>/dev/null || true)"
+    [ "$code" = "403" ] && ok "http://169.254.169.254/ → 403" || fail "http://169.254.169.254/ → '$code' (expected 403)"
+
+    echo "6. shell functions"
+    if [ -f ~/.config/srt/ccx.zsh ] || [ -f ~/.config/srt/ccx.bash ]; then ok "~/.config/srt/ccx.* installed"; else fail "~/.config/srt/ccx.* missing (just install-shell)"; fi
+    rcfound=0
+    for rc in ~/.zshrc ~/.bash_profile ~/.bashrc; do
+      [ -f "$rc" ] && grep -qE 'config/srt/ccx\.|_ccx_run' "$rc" && { ok "$rc wires up ccx"; rcfound=1; }
+    done
+    [ $rcfound -eq 1 ] || fail "no rc file sources ~/.config/srt/ccx.* (just install-shell)"
+
+    echo "7. MITM CA"
+    crt=~/.config/srt/mitm-ca.crt
+    if [ -f "$crt" ]; then
+      security verify-cert -c "$crt" -p ssl >/dev/null 2>&1 && ok "$crt trusted for SSL" || fail "$crt not trusted (just trust-ca)"
+    else
+      fail "$crt missing (just trust-ca)"
+    fi
+
+    echo "8. violations hook"
+    h=~/.claude/hooks/srt-violations.mjs
+    [ -f "$h" ] && ok "$h installed" || fail "$h missing (just install-hook)"
+    jq -e '[.hooks.PostToolUse[]? | .hooks[]? | .command // "" | select(test("srt-violations\\.mjs"))] | length > 0' ~/.claude/settings.json >/dev/null 2>&1 \
+      && ok "registered in ~/.claude/settings.json" || fail "not registered in ~/.claude/settings.json (just install-hook)"
+    [ -f "$h" ] && { env -u SRT_VIOLATIONS_FILE node "$h" >/dev/null 2>&1 && ok "hook is a no-op outside the sandbox" || fail "hook errored outside the sandbox"; }
+
+    echo "9. full-stack smoke test (gh api user through the wrapper)"
+    if command -v gh >/dev/null && gh auth token >/dev/null 2>&1; then
+      login="$( set +e; source "{{dir}}/.bashrc.example"; _ccx_run "$deny" gh api user --jq .login 2>/dev/null )"
+      [ -n "$login" ] && ok "gh api user → $login (proxy, TLS termination, keychain trust, token masking)" \
+        || fail "gh api user failed inside the sandbox — try: ccx_exec gh api user"
+    else
+      echo "  skip gh not installed or not logged in"
+    fi
+
+    echo
+    [ $failed -eq 0 ] && echo "all checks passed" || { echo "some checks FAILED"; exit 1; }

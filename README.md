@@ -36,3 +36,9 @@ After substantive edits, regenerate `ltic-ai-guidelines.png`:
   --screenshot="$PWD/ltic-ai-guidelines.png" \
   "file://$PWD/ltic-ai-guidelines.html"
 ```
+
+## Sandboxed Claude Code
+
+[`sandbox-runtime-config/`](sandbox-runtime-config/README.md) holds the
+`srt` configs, shell functions and `justfile` for running Claude Code
+inside Anthropic's sandbox-runtime on macOS. Start there with `just setup`.
