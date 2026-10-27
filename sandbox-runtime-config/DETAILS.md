@@ -556,7 +556,11 @@ counterpart): uploads then sign `UNSIGNED-PAYLOAD` over TLS. Requests
 that sign a literal body hash, or `content-length` (the CLI's `s3`
 commands do; see [fork delta 4](#the-fork)), are buffered (64 MiB cap) so
 the proxy can recompute the hash or restore the length over the bytes it
-forwards; other `UNSIGNED-PAYLOAD` requests stream through. Verified
+forwards; other `UNSIGNED-PAYLOAD` requests stream through. In practice
+every `aws s3` upload takes the buffered path, so the cap applies per
+PutObject / UploadPart: the CLI's default `multipart_chunksize` (8 MiB)
+is well under it, but raising it or `multipart_threshold` past 64 MiB
+turns uploads into `403`s whose reason names the limit. Verified
 inside the sandbox: `aws s3 cp`, `aws s3 rm --recursive`, `s3api
 put-object`, boto3 `put_object` and `upload_file`.
 

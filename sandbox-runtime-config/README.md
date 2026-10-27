@@ -385,9 +385,13 @@ git config --add credential.helper '!gh auth git-credential'
   credentials expire. Name non-production profiles unless the task needs
   production, and let Claude Code's permission prompts gate the commands.
 - **Uploads** sign `UNSIGNED-PAYLOAD` (the wrapper sets the checksum
-  variables) because aws-chunked streaming uploads cannot be re-signed;
-  signed bodies are buffered up to 64 MiB. Presigned URLs and SigV4A
-  requests made with the masked keys are refused with a `403`.
+  variables) because aws-chunked streaming uploads cannot be re-signed.
+  Every `aws s3` upload body is buffered by the proxy and capped at
+  64 MiB per request: fine at the CLI's default 8 MiB multipart part
+  size, but a `multipart_chunksize` / `multipart_threshold` raised past
+  64 MiB gets a `403`. Presigned URLs and SigV4A requests made with the
+  masked keys are refused with a `403`
+  ([details](DETAILS.md#aws-credentials)).
 
 ### Terminal
 
