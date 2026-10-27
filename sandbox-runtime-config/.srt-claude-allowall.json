@@ -15,7 +15,8 @@
     },
     "allowAllDomains": true,
     "allowLocalBinding": false,
-    "tlsTerminate": {}
+    "tlsTerminate": {},
+    "requireHostMatch": true
   },
   "credentials": {
     "envVars": [
@@ -117,7 +118,10 @@
       "sysctl-read kern.",
       "mach-lookup com.apple.SystemConfiguration.configd",
       ".GlobalPreferences",
-      "Library/Preferences/ByHost"
+      "Library/Preferences/ByHost",
+      "mach-lookup com.apple.dnssd.service",
+      "mach-lookup com.apple.usymptomsd",
+      "/.zshenv"
     ]
   },
   "enableWeakerNetworkIsolation": true,

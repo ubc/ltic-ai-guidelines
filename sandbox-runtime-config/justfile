@@ -22,17 +22,19 @@ setup: deps install-srt install-configs install-shell trust-ca install-hook chec
 # after `git pull` of this repo or the fork: rebuild srt, refresh configs/shell/hook, verify
 upgrade: install-srt install-configs install-shell install-hook check
 
-# install socat + jq via Homebrew; verify node/npm/openssl are present
+# install jq via Homebrew; verify node (>= 22.12), npm and openssl are present
 deps:
     #!/usr/bin/env bash
     set -euo pipefail
     command -v brew >/dev/null || { echo "Homebrew is required (https://brew.sh)"; exit 1; }
-    for f in socat jq; do
+    for f in jq; do
       command -v "$f" >/dev/null && echo "  ok   $f" || brew install "$f"
     done
     for t in node npm openssl; do
       command -v "$t" >/dev/null && echo "  ok   $t" || { echo "  FAIL $t not on PATH — install it (node via nvm is recommended) and re-run"; exit 1; }
     done
+    node -e 'const [M,m]=process.versions.node.split(".").map(Number); process.exit(M>22||(M===22&&m>=12)?0:1)' \
+      && echo "  ok   node $(node --version)" || { echo "  FAIL node $(node --version) — srt 0.0.81 needs >= 22.12 (nvm install 22)"; exit 1; }
     command -v gh >/dev/null && echo "  ok   gh" || echo "  note gh not found — GitHub token masking will be skipped (brew install gh to enable)"
 
 # clone/update the ltic-main fork, build it, install `srt` globally
@@ -144,7 +146,7 @@ install-hook:
       echo "  ok   registered PostToolUse(Bash) hook in $s (backup: $s.bak)"
     fi
 
-# verify the whole install: tools, configs, egress, CA trust, hook, and a gh smoke test
+# verify the whole install: tools, configs, egress, CA trust, hook, and gh + git-over-SSH smoke tests
 check:
     #!/usr/bin/env bash
     set -uo pipefail
@@ -155,9 +157,14 @@ check:
     allow=~/.srt-claude-allowall.json
 
     echo "1. tools"
-    for t in srt socat jq node openssl; do
+    for t in srt jq node openssl; do
       command -v "$t" >/dev/null && ok "$t" || fail "$t not on PATH (just deps / just install-srt)"
     done
+    if node -e 'const [M,m]=process.versions.node.split(".").map(Number); process.exit(M>22||(M===22&&m>=12)?0:1)' 2>/dev/null; then
+      ok "node $(node --version) (>= 22.12)"
+    else
+      fail "node $(node --version 2>/dev/null || echo missing) — srt 0.0.81 needs >= 22.12"
+    fi
     v="$(srt --version 2>/dev/null || true)"
     case "$v" in *-ltic*) ok "srt $v is the fork" ;; *) fail "srt --version = '$v' — expected an -ltic build (just install-srt)" ;; esac
 
@@ -212,6 +219,16 @@ check:
         || fail "gh api user failed inside the sandbox — try: ccx_exec gh api user"
     else
       echo "  skip gh not installed or not logged in"
+    fi
+
+    echo "10. git-over-SSH smoke test (nc ProxyCommand through the authenticated proxy)"
+    if ssh-add -l >/dev/null 2>&1; then
+      # ssh -T exits 1 on GitHub even when auth succeeds; judge the text, not the status.
+      out="$( set +e; source "{{dir}}/.bashrc.example"; _ccx_run "$deny" sh -c 'eval "$GIT_SSH_COMMAND -T git@github.com" 2>&1' 2>/dev/null )"
+      grep -q "successfully authenticated" <<<"$out" && ok "ssh -T git@github.com authenticated via the forwarded agent" \
+        || fail "git-over-SSH failed inside the sandbox: ${out:-<no output>} — try: ccx_exec sh -c 'eval \"\$GIT_SSH_COMMAND -T git@github.com\"'"
+    else
+      echo "  skip no keys in ssh-agent (ssh-add first to exercise git-over-SSH)"
     fi
 
     echo

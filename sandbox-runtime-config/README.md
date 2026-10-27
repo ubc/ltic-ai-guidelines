@@ -16,7 +16,7 @@ dives live in [DETAILS.md](DETAILS.md).
 
 | File | Purpose |
 |---|---|
-| `justfile` | `just setup` / `just upgrade` / `just check` — installs and verifies everything below |
+| `justfile` | `just setup` / `just upgrade` / `just check` — installs and verifies everything below, including `gh` and git-over-SSH smoke tests |
 | `.srt-claude-denyall.json` | Restrictive posture — default-deny reads under `/Users`, explicit allow-list |
 | `.srt-claude-allowall.json` | Permissive posture — default-allow reads, explicit deny-list for sensitive paths |
 | `.zshrc.example` | Shell functions (`ccx`, `ccx_permissive`, `ccx_exec`, `srtlog`) for zsh |
@@ -61,6 +61,12 @@ too much friction.
   `CURL_CA_BUNDLE`, `CARGO_HTTP_CAINFO`, `GIT_SSL_CAINFO`,
   `REQUESTS_CA_BUNDLE` for the sandboxed process — no manual CA
   staging needed ([details](DETAILS.md#tls-inside-the-sandbox)).
+- **`requireHostMatch: true`** — inside a tunnel, a request whose
+  `Host` header or TLS server name doesn't match the `CONNECT` target
+  gets a `421` and a violation line. Token injection is keyed on the
+  `CONNECT` target, so this closes the "connect to github.com, address
+  somewhere else" trick. Normal clients always match
+  ([details](DETAILS.md#tls-inside-the-sandbox)).
 - **`credentials.envVars` masks `GH_TOKEN`** — the sandbox sees a fake
   token; the proxy injects the real one only on egress to
   `github.com` / `*.github.com` ([details](DETAILS.md#gh-and-glab)).
@@ -79,8 +85,9 @@ too much friction.
   TLS verification (`gh`, Go binaries, etc.), and for the masking
   setup above ([details](DETAILS.md#tls-inside-the-sandbox)).
 - **`ignoreViolations`** — suppresses benign macOS violation noise
-  (sysctl `kern.*`, preferences plists, configd lookups) from the
-  violations the agent sees
+  (sysctl `kern.*`, preferences plists, configd lookups, and the
+  `~/.zshenv` read and two Mach probes every sandboxed `ssh` hop emits)
+  from the violations the agent sees
   ([details](DETAILS.md#the-violations-pipeline)).
 - Cert-pinned / mTLS hosts break under TLS termination — exclude them
   per-domain via `network.tlsTerminate.excludeDomains`; none set here
@@ -141,12 +148,14 @@ from a normal terminal, not from inside a `ccx` session.
 Upstream `srt` has no allow-all-egress mode; the fork adds
 `allowAllDomains` to fix that (upstream PR
 [#283](https://github.com/anthropic-experimental/sandbox-runtime/pull/283)),
-plus three more deltas: the CLI streams sandbox violations to a file
+plus two more deltas: the CLI streams sandbox violations to a file
 the agent can be shown
-([pipeline](DETAILS.md#the-violations-pipeline)), unrecognized
+([pipeline](DETAILS.md#the-violations-pipeline)), and unrecognized
 settings keys produce a launch-time warning instead of being silently
-ignored, and git-over-SSH works on macOS via an auth-capable socat
-ProxyCommand ([details](DETAILS.md#the-fork)).
+ignored ([details](DETAILS.md#the-fork)).
+
+Requires Node ≥ 22.12 (`node --version`); an older Node fails at `npm
+install` with an `engines` error.
 
 ```bash
 git clone https://github.com/ubc/sandbox-runtime.git ~/src/sandbox-runtime
@@ -167,15 +176,14 @@ prefix is user-writable and needs neither.
 Verify the install — the `-ltic` suffix confirms the patched fork:
 
 ```bash
-srt --version      # → 0.0.77-ltic.1
+srt --version      # → 0.0.81-ltic.1
 ```
 
-Also install socat (`just deps`) — it's what carries sandboxed SSH
-through the authenticated proxy (without it srt falls back to `nc`,
-which can't authenticate, and git-over-SSH stays broken):
+Also install jq (`just deps`) — the shell functions use it to build
+the per-launch config:
 
 ```bash
-brew install socat jq
+brew install jq
 ```
 
 ### 2. Copy the config files into your home directory — `just install-configs`
@@ -272,7 +280,7 @@ arrive with ~1–2 s of log latency; network denials are instant.
 ### 6. Use it — `just check` first
 
 ```bash
-just check       # tools, configs, egress, CA trust, hook, and a gh smoke test
+just check       # tools, configs, egress, CA trust, hook, gh and git-over-SSH smoke tests
 cd ~/src/your-project
 ccx              # strict sandbox
 ccx_permissive   # deny-list sandbox
@@ -317,14 +325,17 @@ git config --add credential.helper '!gh auth git-credential'
 
 ### Git, SSH and GitHub
 
-- **git-over-SSH works via the forwarded ssh-agent** — needs socat and
-  keys loaded with `ssh-add` (or `ssh-add -c` for per-use
-  confirmation) before launching. Raw keys stay unreadable; the agent
-  signs, which also makes `IdentitiesOnly yes` setups work as-is
-  (public keys are readable). Plain `ssh` outside git: `eval
-  "$GIT_SSH_COMMAND git@github.com"`. Trade-off: while a session runs,
-  sandboxed code can authenticate as you to anything the agent holds
-  keys for ([details](DETAILS.md#ssh)).
+- **git-over-SSH works via the forwarded ssh-agent** — needs keys
+  loaded with `ssh-add` (or `ssh-add -c` for per-use confirmation)
+  before launching; nothing beyond what macOS ships. Raw keys stay
+  unreadable; the agent signs, which also makes `IdentitiesOnly yes`
+  setups work as-is (public keys are readable). Plain `ssh` outside
+  git: `eval "$GIT_SSH_COMMAND git@github.com"`. A destination refused
+  by `deniedDomains` prints its configured reason on ssh's stderr
+  (`sandbox proxy: <host>:22: 403 <reason>`), and `git` shows the same
+  line. Trade-off: while a session runs, sandboxed code can
+  authenticate as you to anything the agent holds keys for
+  ([details](DETAILS.md#ssh)).
 - **HTTPS remotes work with a one-time credential-helper setup**
   (alternative to SSH):
   ```bash
@@ -360,7 +371,9 @@ PNPM note) so it doesn't shadow the sourced file; `just install-shell`
 warns while it's still there.
 
 What changed in each release, and what to migrate by hand:
-[upgrade notes by version](DETAILS.md#upgrade-notes-by-version).
+[upgrade notes by version](DETAILS.md#upgrade-notes-by-version). Since
+0.0.81 socat is no longer used; `brew uninstall socat` is safe if
+nothing else needs it.
 
 ## More
 

@@ -24,7 +24,7 @@ additive change.
 
 ## The fork
 
-Four deltas over upstream `srt`:
+Three deltas over upstream `srt`:
 
 1. **`allowAllDomains: true`** short-circuits the allowlist *after*
    `deniedDomains` is checked. It covers hostnames only: IP literals
@@ -42,11 +42,15 @@ Four deltas over upstream `srt`:
    typo'd `allowAllDomainz` runs as a deny-all sandbox with no
    feedback. The fork prints a launch-time warning naming every
    unrecognized key. `just check` fails on that warning.
-4. **Working git-over-SSH on macOS** (`src/sandbox/sandbox-utils.ts`,
-   upstream [PR #452](https://github.com/anthropic-experimental/sandbox-runtime/pull/452)):
-   when socat is on PATH, `GIT_SSH_COMMAND` uses an auth-capable socat
-   HTTP CONNECT ProxyCommand instead of BSD `nc`, which can't
-   authenticate to the session proxy ([details](#ssh)).
+
+**Retired deltas**, now covered upstream: `denyReadAlways` /
+`denyReadAlwaysExcept` (retired at 0.0.77 — a `denyRead` glob now beats
+a broader `allowRead`), and the macOS socat `GIT_SSH_COMMAND`
+ProxyCommand (retired at 0.0.81 — upstream
+[#681](https://github.com/anthropic-experimental/sandbox-runtime/pull/681)
+does authenticated git-over-SSH with stock `/usr/bin/nc`; fork PR
+[#452](https://github.com/anthropic-experimental/sandbox-runtime/pull/452)
+is superseded). socat is no longer a dependency on macOS.
 
 `srt --version` reports `<upstream>-ltic.N`; the suffix is the quick
 check that you're on the fork. `just check` also verifies egress end to
@@ -72,11 +76,69 @@ Behaviour changes from the upstream sync that matter here:
 - Violation lines are sanitized to one physical line each.
 - Seatbelt profiles are roughly 6–10× smaller.
 
+### Upstream changes in 0.0.81
+
+macOS-relevant changes from the 0.0.78–0.0.81 sync (upstream PR numbers
+in parentheses; 0.0.81 itself is Windows-only):
+
+- **git-over-SSH on macOS uses stock `/usr/bin/nc`** (#681). srt exports
+  `SRT_SSH_PROXY_COMMAND`, a shell snippet that sends an authenticated
+  `CONNECT` to the session proxy, and `GIT_SSH_COMMAND` whose
+  `ProxyCommand` evals it. The proxy token lives in that variable, never
+  in ssh's argv. See [SSH](#ssh).
+- **A refused `CONNECT` carries the deny reason as its `403` status
+  phrase** (#681), so `curl -I`, git and ssh print it in-band; the
+  violations file still gets the same line.
+- **Node ≥ 22.12 is required** (#636).
+- **New `network.requireHostMatch`** (#663): a request inside a tunnel
+  whose `Host`, TLS server name or absolute-form authority doesn't name
+  the `CONNECT` target gets `421` and a violation. Adopted in both
+  configs ([why](#tls-inside-the-sandbox)). Also new, not adopted:
+  `refuseOpaqueTunnels` (would refuse SSH), `ambiguousRequestTarget`
+  (#698), `stripResponseHeaders` and `allowPlaintextHeaderSet` (only
+  matter with a library-level `filterRequest` callback).
+- **TLS termination runs in-process** (#665, #700): no per-tunnel
+  listener or socket file. New `tlsTerminate.maxTunnels` (default 256;
+  past it a `CONNECT` gets `503` with `X-Proxy-Error: too-many-tunnels`
+  and a violation) and `tlsTerminate.handshakeTimeoutMs` (default
+  10000).
+- **Glob brackets** (#620–#622, #687, #718): a path entry whose
+  characters read as a pattern is also read as the literal path it
+  spells, where that exists; brackets that spell no character set
+  (`[user-id]`, `backup[2024-01-15]`) are text; `*` or `?` inside
+  brackets is a set member. `{ "path": "…", "literal": true }` marks an
+  entry literal in any of the four filesystem lists.
+- **Read rules apply under both spellings of a path** on macOS, as
+  written and with symlinks resolved (#680). `credentials.files` entries
+  beat `allowRead` / `allowWrite` on every platform (#680, #686); not
+  used here.
+- **Library self-protection** (#595): a wrapped command is write-denied
+  srt's own install directory, and `checkDependencies()` warns when srt
+  is installed somewhere the sandbox can write. Under nvm that is
+  `~/.nvm/…`, which neither config grants write to.
+- **Proxy robustness**: an upstream answering with an invalid status
+  line gets `502` instead of crashing the proxy (#660); a body longer
+  than its `Content-Length` is passed whole (#717); certificate serials
+  never start with a zero byte (#685).
+- **Temp files**: `process.exit()` or a failed `initialize()` no longer
+  leave a generated CA key behind (#670); these configs use a
+  persistent CA anyway.
+- The ask callback only allows on `true` (#591); the CLI has none.
+
 ### Upgrade notes by version
 
 `just upgrade` handles the generic path (rebuild srt, re-copy configs,
 reinstall shell functions and hook, verify). Per-version specifics, for
 anyone migrating customized configs by hand:
+
+**0.0.77-ltic.1 → 0.0.81-ltic.1.** No config migration. socat is no
+longer needed (`just deps` and `just check` stop asking for it; `brew
+uninstall socat` is optional). Node must be ≥ 22.12. Both configs gained
+`"requireHostMatch": true` under `network` and three ssh-hop entries in
+`ignoreViolations["*"]` (`mach-lookup com.apple.dnssd.service`,
+`mach-lookup com.apple.usymptomsd`, `/.zshenv`); a customized config
+should copy those two edits by hand. `just check` gained a
+git-over-SSH smoke test (skipped when the agent holds no keys).
 
 **0.0.70-ltic.N → 0.0.77-ltic.1.** The fork-only `denyReadAlways` /
 `denyReadAlwaysExcept` keys are gone; an un-migrated config silently
@@ -89,9 +151,10 @@ keys stay denied ([why](#filesystem-rule-mechanics)). Cloud metadata
 (`169.254.169.254`) now gets a 403 instead of being forwarded.
 
 **0.0.62-ltic.1 → later.** Four things changed: socat and jq became
-dependencies (`brew install socat jq`); both configs gained
-`tlsTerminate`, `GH_TOKEN` masking (`credentials.envVars`), global
-credential globs, `deniedDomainReasons` and `ignoreViolations`; the
+dependencies (`brew install socat jq`; socat dropped again at 0.0.81);
+both configs gained `tlsTerminate`, `GH_TOKEN` masking
+(`credentials.envVars`), global credential globs,
+`deniedDomainReasons` and `ignoreViolations`; the
 shell functions were rewritten (persistent MITM CA, per-launch config
 with the ssh-agent socket and CA paths, pinned pnpm store) and won't
 work with the old configs; and two setup steps are new — trusting the
@@ -119,9 +182,14 @@ context right after the failed command:
 3. **Config side.** `network.deniedDomainReasons` (keyed by the exact
    `deniedDomains` string) replaces the generic deny text — always name
    the sanctioned alternative. `ignoreViolations` maps command patterns
-   (`"*"` = all) to substrings to suppress; the four entries cover
-   benign macOS noise every process emits. Extend it if recurring
-   non-actionable noise shows up.
+   (`"*"` = all) to substrings to suppress. Four entries cover benign
+   macOS noise every process emits; three more cover what every
+   sandboxed `ssh` hop emits — ssh runs its `ProxyCommand` via
+   `$SHELL -c`, so a fresh zsh reads `~/.zshenv` (denied, harmless),
+   and ssh probes the `com.apple.dnssd.service` and
+   `com.apple.usymptomsd` Mach services. Without those, each `git push`
+   handed the agent three non-actionable "denials". Extend it if
+   recurring non-actionable noise shows up.
 
 **Security invariant.** Violation lines flow into the agent's context,
 so `~/.local/state/srt` must be readable but **never writable** from
@@ -199,6 +267,18 @@ handshake with `OSStatus -26276` regardless of keychain trust), and
 **Cert-pinned or mTLS hosts** break under termination. Add them to
 `network.tlsTerminate.excludeDomains` rather than turning termination
 off globally; excluded hosts also lose token injection.
+
+**`requireHostMatch`.** Policy and token injection are decided on the
+`CONNECT` target (`api.github.com:443`), but the bytes inside the tunnel
+carry their own names: the TLS server name and the `Host` header.
+Without a check, sandboxed code could `CONNECT` to `github.com` (so the
+real `GH_TOKEN` gets injected) while addressing the request to another
+host behind the same front door. With `requireHostMatch: true` the
+proxy answers `421` when the server name, `Host` or absolute-form
+authority doesn't name the `CONNECT` host and port, mints the leaf
+certificate for the `CONNECT` target regardless of the requested name,
+and records the refusal as a violation. Well-behaved clients always
+match; only deliberate domain fronting breaks, and it breaks visibly.
 
 ## Filesystem rule mechanics
 
@@ -314,15 +394,20 @@ spelled per key type — see [carve-out
 shape](#filesystem-rule-mechanics)).
 
 **Transport.** Direct egress is blocked, so the TCP connection must
-traverse the proxy. srt sets `GIT_SSH_COMMAND` with a `ProxyCommand`;
-with socat on PATH (fork delta 4) that is an authenticated HTTP CONNECT
-tunnel — without socat srt falls back to `nc`, which can't authenticate,
-and git-over-SSH dies at the handshake. The proxy sniffs for a TLS
+traverse the proxy. srt sets `GIT_SSH_COMMAND` whose `ProxyCommand`
+runs `/bin/sh -c 'eval "$SRT_SSH_PROXY_COMMAND" sh %h %p'`; that
+script (also exported to the environment) sends an authenticated
+`CONNECT %h:%p` to the session proxy through `/usr/bin/nc`, reads the
+response head, and relays with `cat`. The proxy token travels in the
+variable, not in ssh's argv, and nothing beyond what macOS ships is
+needed. A refused destination prints `sandbox proxy: host:22: 403
+<reason>` on stderr and ssh exits. The proxy sniffs for a TLS
 ClientHello before MITM-ing, so SSH passes through opaque: crypto stays
 end-to-end, the proxy sees only `host:port`, and host-level
 `deniedDomains` still apply (the portless `gist.github.com` entry
 covers gist-over-SSH). For plain `ssh`/`sftp` reuse the same command:
-`eval "$GIT_SSH_COMMAND git@github.com"`.
+`eval "$GIT_SSH_COMMAND git@github.com"`; a bare `ssh github.com` has
+no ProxyCommand and fails to resolve the host.
 
 **Trade-off.** While a session runs, sandboxed code can authenticate as
 you to anything the agent holds keys for, though it can't exfiltrate key
@@ -331,8 +416,13 @@ hardware-backed keys. SSH traffic also bypasses the proxy's visibility
 and token masking; `deniedDomains` is the only lever on that channel.
 The HTTPS alternative (`gh auth git-credential` / `glab auth
 git-credential`, recipe in the README) keeps GitHub traffic visible to
-the proxy and needs no agent. Removing the key globs from `denyRead` is
-not recommended: it allows key exfiltration.
+the proxy and needs no agent. A stricter posture would add
+`github.com:22` and `ssh.github.com` to `deniedDomains` (with a
+`deniedDomainReasons` entry pointing at the HTTPS recipe) so every
+GitHub interaction goes through the masked token; not adopted here
+because SSH remotes are still the documented push path. Removing the
+key globs from `denyRead` is not recommended: it allows key
+exfiltration.
 
 ## Clipboard and OSC 52
 
@@ -395,7 +485,21 @@ the same patterns should work with these config tweaks:
   config hasn't been verified on Linux since the 0.0.77 rework of that
   expansion, so probe that `.env` and key files are actually denied
   before relying on it; if root-anchored globs are skipped, narrow
-  them (`~/src/**/.env*`).
+  them (`~/src/**/.env*`). The expansion walk is ~6× faster since
+  0.0.81 and no longer blocks the event loop (#627 ff.).
+- **Sandboxed commands stay in their namespaces** since 0.0.81 (#588,
+  #617): no new user or mount namespaces by default, so Chromium /
+  Electron's own sandbox, rootless podman / buildah, nested bubblewrap
+  and `unshare -r` fail inside. `allowNestedUserNamespaces: true` lifts
+  it, at the cost of `denyWrite` enforcement against a hostile command;
+  needs the seccomp helper, or bubblewrap ≥ 0.8.0 not installed setuid.
+- **`denyWrite` beats `allowWrite` however nested** (#684): `denyWrite:
+  ["~"]` makes a project under `~` read-only, and `denyWrite: ["/tmp"]`
+  makes the sandbox's own `TMPDIR` read-only.
+- Fixes in 0.0.81: bubblewrap 0.4 starts again (#580); a command's first
+  network call is no longer refused because the in-sandbox relays
+  weren't listening yet (#639); relays fall back to IPv4 without IPv6
+  (#719).
 
 In the shell functions, the `security find-generic-password` seeding is
 macOS Keychain-specific; Claude Code on Linux already uses the file
@@ -411,16 +515,26 @@ srt primitives this config doesn't exercise yet:
 - **`credentials.files` masking** — deliberately not adopted: file
   masking is Linux-only (Seatbelt can't redirect reads, so `mask`
   degrades to `deny`), and the `denyRead` globs already cover it.
-- **URL/path-level filtering.** The TLS-termination layer sees full
-  URLs, so a future schema could allow `github.com` but block
-  `*/raw/*`.
-- **Egress audit logging.** The proxy observes every destination; a
-  log outside the sandbox would give an after-the-fact trail of allowed
-  traffic (the violations pipeline covers only denials).
-- **External policy via the MITM socket.** `MitmProxyConfigSchema` can
-  route domains through an upstream MITM proxy over a Unix socket, so a
-  separate policy engine (secret detection, response inspection) could
-  plug in without modifying srt.
-- **Per-tool egress policies.** `ignoreViolations` varies filesystem
-  rules by command; the same idea for network would let npm reach only
-  `*.npmjs.org` while claude reaches everywhere.
+- **URL/path-level filtering.** Since 0.0.81 the library's
+  `filterRequest` callback can rewrite and observe: an allow may carry
+  `removeHeaders`, `setHeaders` and `onResponse`, a deny may choose its
+  status, and the callback sees `scheme`, `sni`, `target` and
+  `rawHeaders` (#663). That is enough to allow `github.com` but block
+  `*/raw/*` — but it is a library API, not reachable from a
+  `srt --settings` config.
+- **Egress audit logging.** Still open. The proxy observes every
+  destination; a log outside the sandbox would give an after-the-fact
+  trail of allowed traffic (the violations pipeline covers only
+  denials).
+- **External policy engine.** Upstreamed as `srt proxy` / `srt-proxy`
+  (#666, #668): the HTTP proxy alone, with an external decider process
+  answering every request (`docs/srt-proxy.md` in the fork checkout).
+  A separate policy engine (secret detection, response inspection) can
+  plug in without modifying srt; wiring it to the CLI's sandbox is the
+  remaining work.
+- **Per-tool egress policies.** Upstream now has the primitive:
+  `SandboxManager.registerCommandNetworkLists(commandId, {
+  allowedDomains })`, keyed by the proxy username each wrap presents
+  (#591). Library-level only; a config-file spelling would be the
+  fork delta that lets npm reach only `*.npmjs.org` while claude
+  reaches everywhere.
