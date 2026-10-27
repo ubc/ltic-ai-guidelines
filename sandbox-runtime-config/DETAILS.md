@@ -24,7 +24,7 @@ additive change.
 
 ## The fork
 
-Three deltas over upstream `srt`:
+Four deltas over upstream `srt`:
 
 1. **`allowAllDomains: true`** short-circuits the allowlist *after*
    `deniedDomains` is checked. It covers hostnames only: IP literals
@@ -42,6 +42,15 @@ Three deltas over upstream `srt`:
    typo'd `allowAllDomainz` runs as a deny-all sandbox with no
    feedback. The fork prints a launch-time warning naming every
    unrecognized key. `just check` fails on that warning.
+4. **SigV4 re-signing with a signed `content-length`**
+   (`src/sandbox/tls-terminate-proxy.ts`, 0.0.81-ltic.2): an AWS access
+   key id and secret are shorter than srt's sentinel, so body
+   substitution can't keep the request length and drops
+   `content-length`; a client that signed that header — the AWS CLI's
+   high-level `s3` commands, with `UNSIGNED-PAYLOAD` — then left the
+   re-signer nothing to cover and got a `403`. The proxy now buffers the
+   body (same 64 MiB cap as the literal-hash case) and restores the real
+   length before re-signing. Candidate for upstream.
 
 **Retired deltas**, now covered upstream: `denyReadAlways` /
 `denyReadAlwaysExcept` (retired at 0.0.77 — a `denyRead` glob now beats
@@ -130,6 +139,14 @@ in parentheses; 0.0.81 itself is Windows-only):
 `just upgrade` handles the generic path (rebuild srt, re-copy configs,
 reinstall shell functions and hook, verify). Per-version specifics, for
 anyone migrating customized configs by hand:
+
+**0.0.81-ltic.1 → 0.0.81-ltic.2 (AWS support).** `just upgrade` covers
+it: the srt rebuild carries fork delta 4 (without it `aws s3 cp` / `rm`
+inside get a `403`), and `install-shell` / `install-configs` pick up the
+`CCX_AWS_PROFILES` plumbing. A customized config needs one new
+`ignoreViolations["*"]` entry, `"/.aws/cli/cache/session.db"`. Behaviour
+change: the outer shell's `AWS_*` credential variables no longer enter
+the sandbox — use `CCX_AWS_PROFILES` ([why](#aws-credentials)).
 
 **0.0.77-ltic.1 → 0.0.81-ltic.1.** No config migration. socat is no
 longer needed (`just deps` and `just check` stop asking for it; `brew
@@ -465,6 +482,100 @@ config-load error. Re-auth flows (`gh auth login` / `refresh` /
 needs nothing: denyall `allowRead`s that path, allowall doesn't deny
 it. Alternatively inject `GITLAB_TOKEN` in `_ccx_run` the way
 `GH_TOKEN` is.
+
+## AWS credentials
+
+Both postures deny `~/.aws` (and the `/**/credentials` glob covers the
+credentials file anyway), so `aws` and boto3 find no profiles inside.
+Opening `~/.aws` would hand the sandbox real keys — every `la-*` profile
+is an admin role — so the wrapper instead reuses the `GH_TOKEN` mechanism
+with AWS's own twist: **SigV4 re-signing**.
+
+**Masking plus pairs.** A SigV4 signature is an HMAC over the request
+derived from the secret key, so swapping a sentinel for the real secret in
+a header is not enough — the whole signature has to be recomputed. srt's
+`credentials.awsPairs` links a masked access key id, secret and session
+token into one credential: a request whose credential scope names the
+fake access key id is re-signed with the real pair on egress to the
+key-id entry's `injectHosts` (`*.amazonaws.com`); every other request is
+untouched. The per-launch config gets, for each profile named in
+`CCX_AWS_PROFILES`, three `mode: "mask"` entries under per-profile names
+(`CCX_AWS_LA_SHARED_ACCESS_KEY_ID`, …) and one `awsPairs` entry. Several
+profiles coexist because each pair is keyed on its own fake access key
+id. Nothing is added when the variable is unset, so the config is then
+byte-identical to the one `just install-configs` copied.
+
+**Exporting outside.** `aws configure export-credentials --profile P
+--format process` runs *outside* the sandbox, where `~/.aws` is readable.
+It covers both credential shapes used here without special-casing:
+saml2aws profiles (temporary keys saml2aws wrote to `~/.aws/credentials`)
+and IAM Identity Center profiles (role credentials minted from the cached
+SSO token, exactly as `just hc-export` does). It is preceded by `aws sts
+get-caller-identity --profile P`, because `export-credentials` happily
+returns an expired saml2aws key set (the CLI knows nothing of saml2aws's
+`x_security_token_expires`); the STS call fails for expired and unknown
+profiles alike, and its ARN is echoed at launch so you can see which role
+each profile carries. Logins (`just login`, `just hc-login`, `aws sso
+login`) therefore stay outside, and the credentials are a snapshot:
+nothing inside can refresh them, so a saml2aws session (1 h) means a
+relaunch, the same way the Claude token does after ~8 h.
+
+**Why a generated AWS config.** botocore drops the environment credential
+provider as soon as a profile is named explicitly (`--profile`,
+`AWS_PROFILE`, `boto3.Session(profile_name=…)`), and the LA justfile names
+one on every call. So the wrapper writes `$TMPDIR/aws-config` — pointed
+at via `AWS_CONFIG_FILE` — with a `[profile P]` block per named profile
+(region copied from your `~/.aws/config`, falling back to
+`AWS_DEFAULT_REGION`, then `ca-central-1`) whose `credential_process` is
+a tiny helper, `$TMPDIR/aws-cred <STEM>`, that prints that profile's
+masked variables in the JSON shape botocore expects. The first named
+profile is also `[default]`. The file and helper hold variable *names*
+only. `AWS_SHARED_CREDENTIALS_FILE` points at a nonexistent path so the
+CLI stops probing `~/.aws/credentials` (a violation line per call), and
+`AWS_EC2_METADATA_DISABLED=true` stops the IMDS probe the proxy
+otherwise refuses with a `169.254.169.254` denial. Both configs also
+ignore the `~/.aws/cli/cache/session.db` metadata read aws-cli v2 makes
+on every invocation.
+
+**The outer shell's variables.** `_ccx_run` launches srt from a subshell
+that first unsets `AWS_PROFILE`, `AWS_ACCESS_KEY_ID`,
+`AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN` and friends, then exports
+the masked trios. Before this, a real key set exported in your shell
+(`eval "$(just hc-export …)"`) entered the sandbox unmasked; now the only
+way AWS credentials get in is `CCX_AWS_PROFILES`.
+
+**What the proxy cannot re-sign.** Three SigV4 shapes are refused with a
+`403` naming the case (`credentials.sigv4`, left at its fail-closed
+defaults): aws-chunked streaming uploads (`x-amz-content-sha256:
+STREAMING-*`, whose per-chunk signatures chain off the seed), presigned
+URLs (the signature is in the URL) and SigV4A (asymmetric, nothing to
+recompute). aws-cli ≥ 2.23 and recent SDKs upload in the streaming
+trailer form by default for checksums, so the wrapper sets
+`AWS_REQUEST_CHECKSUM_CALCULATION=when_required` (and the response
+counterpart): uploads then sign `UNSIGNED-PAYLOAD` over TLS. Requests
+that sign a literal body hash, or `content-length` (the CLI's `s3`
+commands do; see [fork delta 4](#the-fork)), are buffered (64 MiB cap) so
+the proxy can recompute the hash or restore the length over the bytes it
+forwards; other `UNSIGNED-PAYLOAD` requests stream through. In practice
+every `aws s3` upload takes the buffered path, so the cap applies per
+PutObject / UploadPart: the CLI's default `multipart_chunksize` (8 MiB)
+is well under it, but raising it or `multipart_threshold` past 64 MiB
+turns uploads into `403`s whose reason names the limit. Verified
+inside the sandbox: `aws s3 cp`, `aws s3 rm --recursive`, `s3api
+put-object`, boto3 `put_object` and `upload_file`.
+
+**Residual risk.** Masking stops credential *theft*: the real secret
+never exists inside, a leaked sentinel is worthless elsewhere, and the
+credentials expire with the session. It does not stop *use*: the agent
+can run whatever the named roles allow, which here means admin, so name
+the narrowest profiles that do the job and let Claude Code's permission
+prompts do their work. One subtlety shared with the `GH_TOKEN` masking:
+srt substitutes sentinels in request *bodies* at injectHosts too (so a
+tool that puts a credential in a JSON payload still works), with no
+opt-out — a deliberately malicious agent could therefore launder the real
+secret through an AWS-hosted sink it can write to (an S3 object, an API
+Gateway it controls). Strictly better than real keys in the sandbox, but
+not nothing; the hour-long credential lifetime is the backstop.
 
 ## Using on Linux
 

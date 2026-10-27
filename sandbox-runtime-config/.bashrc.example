@@ -71,28 +71,108 @@ _ccx_run() {
   _ccx_ensure_ca
   local cadir="$HOME/.config/srt"
 
-  # Per-launch config copy, for the two settings that can't be static JSON:
+  # AWS, opt-in per launch: CCX_AWS_PROFILES="la-shared la-dev" ccx.
+  # Each named profile's temporary keys are exported OUT HERE (so saml2aws
+  # and IAM Identity Center profiles both work — log in outside first) and
+  # handed to srt under per-profile names (CCX_AWS_LA_SHARED_ACCESS_KEY_ID
+  # …) that the per-launch config masks: the sandbox only ever sees fakes,
+  # and the proxy re-signs each SigV4 request with the real pair on egress
+  # to *.amazonaws.com. botocore ignores env credentials under an explicit
+  # --profile, so a sandbox-only AWS config maps every named profile back
+  # to its masked trio via credential_process; ~/.aws stays unreadable.
+  # Credentials are a launch-time snapshot (saml2aws: 1 h) — relaunch after.
+  # See DETAILS.md#aws-credentials.
+  local -a aws_env=()      # NAME=value pairs, exported only in the srt subshell
+  local aws_specs=""       # "STEM:1 STEM:0 …" for jq (1 = has a session token)
+  local aws_cfg=""         # generated AWS config; empty = AWS not requested
+  if [[ -n "${CCX_AWS_PROFILES:-}" ]]; then
+    command -v aws >/dev/null 2>&1 || { echo "ccx: CCX_AWS_PROFILES is set but aws is not on PATH" >&2; return 1; }
+    aws_cfg="$td/aws-config"
+    local helper="$td/aws-cred"
+    cat > "$helper" <<'EOF'
+#!/bin/sh
+# credential_process for ccx's sandbox-only AWS config: prints one profile's
+# (masked) CCX_AWS_<STEM>_* variables in the JSON shape botocore expects.
+stem="CCX_AWS_$1"
+eval "akid=\${${stem}_ACCESS_KEY_ID}; secret=\${${stem}_SECRET_ACCESS_KEY}; token=\${${stem}_SESSION_TOKEN:-}"
+if [ -n "$token" ]; then
+  printf '{"Version":1,"AccessKeyId":"%s","SecretAccessKey":"%s","SessionToken":"%s"}\n' "$akid" "$secret" "$token"
+else
+  printf '{"Version":1,"AccessKeyId":"%s","SecretAccessKey":"%s"}\n' "$akid" "$secret"
+fi
+EOF
+    chmod 700 "$helper"
+    : > "$aws_cfg"; chmod 600 "$aws_cfg"   # holds variable NAMES only, never secrets
+    local p stem arn akid secret token region first=1
+    for p in ${CCX_AWS_PROFILES//,/ }; do
+      stem=$(printf '%s\n' "$p" | tr 'a-z-' 'A-Z_' | tr -c 'A-Z0-9_\n' '_')
+      # sts proves the profile is logged in AND unexpired (export-credentials
+      # happily returns stale saml2aws keys), and names the role for you.
+      arn=$(aws sts get-caller-identity --profile "$p" --query Arn --output text 2>/dev/null) \
+        || { echo "ccx: AWS profile '$p' has no valid credentials — log in outside the sandbox first (just login $p, or just hc-login)" >&2; return 1; }
+      IFS=$'\t' read -r akid secret token < <(aws configure export-credentials --profile "$p" --format process 2>/dev/null \
+        | jq -r '[.AccessKeyId, .SecretAccessKey, .SessionToken // ""] | @tsv')
+      [[ -n "$akid" && -n "$secret" ]] || { echo "ccx: aws configure export-credentials --profile $p returned nothing usable" >&2; return 1; }
+      region=$(aws configure get region --profile "$p" 2>/dev/null); region=${region:-${AWS_DEFAULT_REGION:-ca-central-1}}
+      aws_env+=("CCX_AWS_${stem}_ACCESS_KEY_ID=$akid" "CCX_AWS_${stem}_SECRET_ACCESS_KEY=$secret")
+      if [[ -n "$token" ]]; then aws_env+=("CCX_AWS_${stem}_SESSION_TOKEN=$token"); aws_specs+="$stem:1 "; else aws_specs+="$stem:0 "; fi
+      # The first named profile is also [default], so a bare `aws` works.
+      if (( first )); then printf '[default]\nregion = %s\noutput = json\ncredential_process = %s %s\n\n' "$region" "$helper" "$stem" >> "$aws_cfg"; first=0; fi
+      printf '[profile %s]\nregion = %s\noutput = json\ncredential_process = %s %s\n\n' "$p" "$region" "$helper" "$stem" >> "$aws_cfg"
+      echo "ccx: aws $p → $arn" >&2
+    done
+  fi
+
+  # Per-launch config copy, for the settings that can't be static JSON:
   # - SSH agent forwarding: the launchd socket path changes every login
   #   session, and Seatbelt gates Unix sockets via network.allowUnixSockets.
   #   Trade-off: sandboxed code can authenticate as you while the session
   #   runs — mitigate with ssh-add -c or hardware-backed keys.
   # - The CA paths (tlsTerminate does no tilde expansion).
+  # - AWS: one masked trio plus one awsPairs entry per named profile.
   local cfg="$td/settings.json"
-  jq --arg sock "${SSH_AUTH_SOCK:-}" --arg cadir "$cadir" '
+  jq --arg sock "${SSH_AUTH_SOCK:-}" --arg cadir "$cadir" --arg aws "$aws_specs" '
     (if $sock != "" then .network.allowUnixSockets = [$sock] else . end)
     | .network.tlsTerminate.caCertPath = ($cadir + "/mitm-ca.crt")
     | .network.tlsTerminate.caKeyPath  = ($cadir + "/mitm-ca.key")
+    | ($aws | split(" ") | map(select(length > 0) | split(":")
+        | {stem: ("CCX_AWS_" + .[0]), token: (.[1] == "1")})) as $p
+    | if ($p | length) == 0 then . else
+        .credentials.envVars += [ $p[]
+          | ([.stem + "_ACCESS_KEY_ID", .stem + "_SECRET_ACCESS_KEY"]
+             + (if .token then [.stem + "_SESSION_TOKEN"] else [] end))[]
+          | {name: ., mode: "mask", injectHosts: ["*.amazonaws.com"]} ]
+        | .credentials.awsPairs += [ $p[]
+          | {accessKeyIdVar: (.stem + "_ACCESS_KEY_ID"), secretAccessKeyVar: (.stem + "_SECRET_ACCESS_KEY")}
+            + (if .token then {sessionTokenVar: (.stem + "_SESSION_TOKEN")} else {} end) ]
+      end
   ' "$settings" > "$cfg"
 
+  # Launch in a subshell so no credential variable lingers in your shell.
+  # The outer shell's AWS_* credential variables never enter the sandbox
+  # unmasked: they are dropped, then the masked trios (if any) and the
+  # sandbox-only AWS config are exported. AWS_EC2_METADATA_DISABLED stops
+  # the IMDS probe that otherwise shows up as a 169.254.169.254 denial; the
+  # checksum settings make S3 uploads sign UNSIGNED-PAYLOAD instead of the
+  # aws-chunked streaming form the proxy cannot re-sign.
   # pnpm_config_store_dir pins pnpm's global store; without it pnpm's
   # store probe fails inside and silently creates a per-project .pnpm-store/.
-  CLAUDE_CODE_TMPDIR="$td" \
-  DISABLE_FEEDBACK_COMMAND=1 \
-  CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 \
-  GH_TOKEN="$gh_token" \
-  SSH_AUTH_SOCK="${SSH_AUTH_SOCK:-}" \
-  pnpm_config_store_dir="$HOME/Library/pnpm/store" \
-    srt --settings "$cfg" -- "$@"
+  (
+    unset AWS_PROFILE AWS_DEFAULT_PROFILE AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_SECURITY_TOKEN
+    if [[ -n "$aws_cfg" ]]; then
+      export "${aws_env[@]}"
+      export AWS_CONFIG_FILE="$aws_cfg" AWS_SHARED_CREDENTIALS_FILE="$td/no-credentials" \
+        AWS_EC2_METADATA_DISABLED=true \
+        AWS_REQUEST_CHECKSUM_CALCULATION=when_required AWS_RESPONSE_CHECKSUM_VALIDATION=when_required
+    fi
+    CLAUDE_CODE_TMPDIR="$td" \
+    DISABLE_FEEDBACK_COMMAND=1 \
+    CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 \
+    GH_TOKEN="$gh_token" \
+    SSH_AUTH_SOCK="${SSH_AUTH_SOCK:-}" \
+    pnpm_config_store_dir="$HOME/Library/pnpm/store" \
+      exec srt --settings "$cfg" -- "$@"
+  )
 }
 
 ccx()            { _ccx_run ~/.srt-claude-denyall.json  claude "$@"; }
