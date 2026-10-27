@@ -24,7 +24,7 @@ additive change.
 
 ## The fork
 
-Three deltas over upstream `srt`:
+Four deltas over upstream `srt`:
 
 1. **`allowAllDomains: true`** short-circuits the allowlist *after*
    `deniedDomains` is checked. It covers hostnames only: IP literals
@@ -42,6 +42,15 @@ Three deltas over upstream `srt`:
    typo'd `allowAllDomainz` runs as a deny-all sandbox with no
    feedback. The fork prints a launch-time warning naming every
    unrecognized key. `just check` fails on that warning.
+4. **SigV4 re-signing with a signed `content-length`**
+   (`src/sandbox/tls-terminate-proxy.ts`, 0.0.81-ltic.2): an AWS access
+   key id and secret are shorter than srt's sentinel, so body
+   substitution can't keep the request length and drops
+   `content-length`; a client that signed that header — the AWS CLI's
+   high-level `s3` commands, with `UNSIGNED-PAYLOAD` — then left the
+   re-signer nothing to cover and got a `403`. The proxy now buffers the
+   body (same 64 MiB cap as the literal-hash case) and restores the real
+   length before re-signing. Candidate for upstream.
 
 **Retired deltas**, now covered upstream: `denyReadAlways` /
 `denyReadAlwaysExcept` (retired at 0.0.77 — a `denyRead` glob now beats
@@ -131,8 +140,10 @@ in parentheses; 0.0.81 itself is Windows-only):
 reinstall shell functions and hook, verify). Per-version specifics, for
 anyone migrating customized configs by hand:
 
-**AWS support (config-only, no srt bump).** `just install-shell` and
-`just install-configs` pick it up; a customized config needs one new
+**0.0.81-ltic.1 → 0.0.81-ltic.2 (AWS support).** `just upgrade` covers
+it: the srt rebuild carries fork delta 4 (without it `aws s3 cp` / `rm`
+inside get a `403`), and `install-shell` / `install-configs` pick up the
+`CCX_AWS_PROFILES` plumbing. A customized config needs one new
 `ignoreViolations["*"]` entry, `"/.aws/cli/cache/session.db"`. Behaviour
 change: the outer shell's `AWS_*` credential variables no longer enter
 the sandbox — use `CCX_AWS_PROFILES` ([why](#aws-credentials)).
@@ -541,9 +552,13 @@ URLs (the signature is in the URL) and SigV4A (asymmetric, nothing to
 recompute). aws-cli ≥ 2.23 and recent SDKs upload in the streaming
 trailer form by default for checksums, so the wrapper sets
 `AWS_REQUEST_CHECKSUM_CALCULATION=when_required` (and the response
-counterpart): uploads then sign `UNSIGNED-PAYLOAD` over TLS and stream
-through. Requests that sign a literal body hash are buffered (64 MiB cap)
-so the proxy can recompute the hash over the bytes it forwards.
+counterpart): uploads then sign `UNSIGNED-PAYLOAD` over TLS. Requests
+that sign a literal body hash, or `content-length` (the CLI's `s3`
+commands do; see [fork delta 4](#the-fork)), are buffered (64 MiB cap) so
+the proxy can recompute the hash or restore the length over the bytes it
+forwards; other `UNSIGNED-PAYLOAD` requests stream through. Verified
+inside the sandbox: `aws s3 cp`, `aws s3 rm --recursive`, `s3api
+put-object`, boto3 `put_object` and `upload_file`.
 
 **Residual risk.** Masking stops credential *theft*: the real secret
 never exists inside, a leaked sentinel is worthless elsewhere, and the

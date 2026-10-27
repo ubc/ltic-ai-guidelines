@@ -161,11 +161,12 @@ from a normal terminal, not from inside a `ccx` session.
 Upstream `srt` has no allow-all-egress mode; the fork adds
 `allowAllDomains` to fix that (upstream PR
 [#283](https://github.com/anthropic-experimental/sandbox-runtime/pull/283)),
-plus two more deltas: the CLI streams sandbox violations to a file
+plus three more deltas: the CLI streams sandbox violations to a file
 the agent can be shown
-([pipeline](DETAILS.md#the-violations-pipeline)), and unrecognized
+([pipeline](DETAILS.md#the-violations-pipeline)), unrecognized
 settings keys produce a launch-time warning instead of being silently
-ignored ([details](DETAILS.md#the-fork)).
+ignored, and AWS SigV4 re-signing handles the request shape the AWS
+CLI's `s3` commands send ([details](DETAILS.md#the-fork)).
 
 Requires Node ≥ 22.12 (`node --version`); an older Node fails at `npm
 install` with an `engines` error.
@@ -189,7 +190,7 @@ prefix is user-writable and needs neither.
 Verify the install — the `-ltic` suffix confirms the patched fork:
 
 ```bash
-srt --version      # → 0.0.81-ltic.1
+srt --version      # → 0.0.81-ltic.2
 ```
 
 Also install jq (`just deps`) — the shell functions use it to build
