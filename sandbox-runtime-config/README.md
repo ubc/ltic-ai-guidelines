@@ -80,18 +80,23 @@ too much friction.
   globs catch by accident — `.env.example` and friends, public keys —
   are carved back out with narrower `allowRead` globs
   ([details](DETAILS.md#filesystem-rule-mechanics)).
-- **`denyWrite`** for `~/.claude/settings*.json` and
-  `~/.claude/CLAUDE.md` — closes hook-installation persistence vectors
+- **`denyWrite`** for `~/.claude/settings*.json`, `~/.claude/CLAUDE.md`
+  and `~/.claude.json` — closes the persistence vectors (hooks, memory,
+  user-scope MCP servers) that would run outside the sandbox on the next
+  launch. The cost: MCP approvals, "don't ask again" answers and similar
+  session state are not saved from inside
   ([details](DETAILS.md#filesystem-rule-mechanics)).
 - **`allowWrite`** uses `/private/tmp`, not `/tmp` — Seatbelt doesn't
   resolve the symlink ([details](DETAILS.md#filesystem-rule-mechanics)).
 - **`enableWeakerNetworkIsolation: true`** — required for trustd-based
   TLS verification (`gh`, Go binaries, etc.), and for the masking
   setup above ([details](DETAILS.md#tls-inside-the-sandbox)).
-- **`ignoreViolations`** — suppresses benign macOS violation noise
-  (sysctl `kern.*`, preferences plists, configd lookups, and the
-  `~/.zshenv` read and two Mach probes every sandboxed `ssh` hop emits)
-  from the violations the agent sees
+- **`ignoreViolations`** — suppresses benign violation noise from the
+  lines the agent sees: macOS background noise (sysctl `kern.*`,
+  preferences plists, configd lookups), what every sandboxed `ssh` hop
+  emits (`~/.zshenv`, two Mach probes), and Claude Code's own startup
+  probes (Keychain, FSEvents, `~/.zprofile`, its URL-handler app, its
+  `~/.claude.json` temp file) plus aws-cli's session cache
   ([details](DETAILS.md#the-violations-pipeline)).
 - Cert-pinned / mTLS hosts break under TLS termination — exclude them
   per-domain via `network.tlsTerminate.excludeDomains`; none set here
@@ -261,7 +266,9 @@ The forked `srt` logs each sandbox denial to a file
 `$SRT_VIOLATIONS_FILE`). This Claude Code hook feeds new lines into the
 agent's context after each Bash command, so a policy block reads as
 policy — with its configured reason — instead of a mysterious
-403/EPERM ([details](DETAILS.md#the-violations-pipeline)):
+403/EPERM. Registered a second time for `SessionStart` with `--mark`,
+it first skips the backlog Claude Code's own startup probing produces
+([details](DETAILS.md#the-violations-pipeline)):
 
 ```bash
 mkdir -p ~/.claude/hooks
@@ -272,6 +279,17 @@ Then merge into the `hooks` key of `~/.claude/settings.json`:
 
 ```json
 "hooks": {
+  "SessionStart": [
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "node \"$HOME/.claude/hooks/srt-violations.mjs\" --mark",
+          "timeout": 10
+        }
+      ]
+    }
+  ],
   "PostToolUse": [
     {
       "matcher": "Bash",
@@ -287,8 +305,8 @@ Then merge into the `hooks` key of `~/.claude/settings.json`:
 }
 ```
 
-Outside an srt sandbox `$SRT_VIOLATIONS_FILE` is unset and the hook is
-a no-op, so it's safe to leave registered globally. Filesystem denials
+Outside an srt sandbox `$SRT_VIOLATIONS_FILE` is unset and both are
+no-ops, so they're safe to leave registered globally. Filesystem denials
 arrive with ~1–2 s of log latency; network denials are instant.
 
 ### 6. Use it — `just check` first

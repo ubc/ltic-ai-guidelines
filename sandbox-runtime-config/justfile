@@ -123,7 +123,7 @@ trust-ca:
       echo "  ok   trusted $crt"
     fi
 
-# install the violations hook and register it in ~/.claude/settings.json
+# install the violations hook and register it (PostToolUse Bash + SessionStart --mark) in ~/.claude/settings.json
 install-hook:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -135,10 +135,14 @@ install-hook:
     jq . "$s" >/dev/null || { echo "  FAIL $s is not valid JSON — fix it first"; exit 1; }
     tmp="$s.tmp.$$"
     jq --arg cmd 'node "$HOME/.claude/hooks/srt-violations.mjs"' '
-      .hooks //= {} | .hooks.PostToolUse //= [] |
+      .hooks //= {} | .hooks.PostToolUse //= [] | .hooks.SessionStart //= [] |
       if ([.hooks.PostToolUse[]? | .hooks[]? | .command // "" | select(test("srt-violations\\.mjs"))] | length) > 0
       then .
       else .hooks.PostToolUse += [{matcher: "Bash", hooks: [{type: "command", command: $cmd, timeout: 10}]}]
+      end |
+      if ([.hooks.SessionStart[]? | .hooks[]? | .command // "" | select(test("srt-violations\\.mjs.* --mark"))] | length) > 0
+      then .
+      else .hooks.SessionStart += [{hooks: [{type: "command", command: ($cmd + " --mark"), timeout: 10}]}]
       end' "$s" > "$tmp"
     if cmp -s "$s" "$tmp"; then
       rm -f "$tmp"; echo "  ok   hook already registered in $s"
@@ -211,7 +215,9 @@ check:
     [ -f "$h" ] && ok "$h installed" || fail "$h missing (just install-hook)"
     jq -e '[.hooks.PostToolUse[]? | .hooks[]? | .command // "" | select(test("srt-violations\\.mjs"))] | length > 0' ~/.claude/settings.json >/dev/null 2>&1 \
       && ok "registered in ~/.claude/settings.json" || fail "not registered in ~/.claude/settings.json (just install-hook)"
-    [ -f "$h" ] && { env -u SRT_VIOLATIONS_FILE node "$h" >/dev/null 2>&1 && ok "hook is a no-op outside the sandbox" || fail "hook errored outside the sandbox"; }
+    jq -e '[.hooks.SessionStart[]? | .hooks[]? | .command // "" | select(test("srt-violations\\.mjs.* --mark"))] | length > 0' ~/.claude/settings.json >/dev/null 2>&1 \
+      && ok "SessionStart --mark registered (startup backlog skipped)" || fail "SessionStart --mark not registered (just install-hook)"
+    [ -f "$h" ] && { env -u SRT_VIOLATIONS_FILE node "$h" >/dev/null 2>&1 && env -u SRT_VIOLATIONS_FILE node "$h" --mark >/dev/null 2>&1 && ok "hook is a no-op outside the sandbox (both modes)" || fail "hook errored outside the sandbox"; }
 
     echo "9. full-stack smoke test (gh api user through the wrapper)"
     if command -v gh >/dev/null && gh auth token >/dev/null 2>&1; then

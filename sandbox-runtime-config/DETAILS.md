@@ -140,6 +140,17 @@ in parentheses; 0.0.81 itself is Windows-only):
 reinstall shell functions and hook, verify). Per-version specifics, for
 anyone migrating customized configs by hand:
 
+**Startup-noise release (config + hook, no srt bump).** `just upgrade`
+covers it; by hand, `just install-configs` and `just install-hook` (the
+hook gains a `SessionStart --mark` registration). A customized config:
+move `~/.claude.json` from `allowWrite` to `denyWrite` (keep the
+`.lock`), add `~/Library/Caches/claude-cli-nodejs` to `allowWrite` (and
+to denyall's `allowRead`), and add five `ignoreViolations["*"]` entries:
+`"/.claude.json.tmp."`, `"mach-lookup com.apple.FSEvents"`,
+`"Library/Keychains/login.keychain-db"`, `"Claude Code URL Handler.app"`,
+`"/.zprofile"` ([why](#filesystem-rule-mechanics),
+[pipeline](#the-violations-pipeline)).
+
 **0.0.81-ltic.1 → 0.0.81-ltic.2 (AWS support).** `just upgrade` covers
 it: the srt rebuild carries fork delta 4 (without it `aws s3 cp` / `rm`
 inside get a `403`), and `install-shell` / `install-configs` pick up the
@@ -191,22 +202,42 @@ context right after the failed command:
    `$SRT_VIOLATIONS_FILE`. Concurrent sessions are isolated for free;
    logs older than 7 days are pruned at startup.
 2. **Claude Code side (`srt-violations.mjs`, installed by `just
-   install-hook`).** A PostToolUse(Bash) hook reads the file from the
-   offset it last reached (state in `~/.cache/srt-hook/`) and injects
-   new lines as `additionalContext` inside a `<sandbox_violations>`
-   block, with a preamble saying these are policy blocks, not errors.
-   With `$SRT_VIOLATIONS_FILE` unset the hook exits immediately.
+   install-hook`).** Registered twice. As a `SessionStart` hook with
+   `--mark` it records the file's current size as the read offset
+   (state in `~/.cache/srt-hook/`) and prints nothing: Claude Code's own
+   startup probing — Keychain, browser profiles, FSEvents, its state
+   file — all lands before the first tool call, and without the mark
+   the first Bash command carried that whole backlog into the agent's
+   context. As a PostToolUse(Bash) hook it reads the file from the
+   offset it last reached and injects new lines as `additionalContext`
+   inside a `<sandbox_violations>` block, with a preamble saying these
+   are policy blocks, not errors. With `$SRT_VIOLATIONS_FILE` unset both
+   exit immediately. Filesystem denials reach the file with ~1–2 s of
+   log latency, so a few late startup lines can still slip past the
+   mark; the `ignoreViolations` entries below catch the recurring ones.
 3. **Config side.** `network.deniedDomainReasons` (keyed by the exact
    `deniedDomains` string) replaces the generic deny text — always name
    the sanctioned alternative. `ignoreViolations` maps command patterns
    (`"*"` = all) to substrings to suppress. Four entries cover benign
-   macOS noise every process emits; three more cover what every
-   sandboxed `ssh` hop emits — ssh runs its `ProxyCommand` via
-   `$SHELL -c`, so a fresh zsh reads `~/.zshenv` (denied, harmless),
-   and ssh probes the `com.apple.dnssd.service` and
-   `com.apple.usymptomsd` Mach services. Without those, each `git push`
-   handed the agent three non-actionable "denials". Extend it if
-   recurring non-actionable noise shows up.
+   macOS noise every process emits; three cover what every sandboxed
+   `ssh` hop emits — ssh runs its `ProxyCommand` via `$SHELL -c`, so a
+   fresh zsh reads `~/.zshenv` (denied, harmless), and ssh probes the
+   `com.apple.dnssd.service` and `com.apple.usymptomsd` Mach services;
+   without those, each `git push` handed the agent three non-actionable
+   "denials". Five cover Claude Code's own startup probes, each a
+   deliberate deny the agent can do nothing about: the login Keychain
+   (credentials come from the seeded file instead), the
+   `com.apple.FSEvents` Mach service (file watching is off inside; srt
+   has no Mach allowlist), `~/.zprofile` (read by the login shell Claude
+   Code spawns), its URL-handler app bundle, and the `~/.claude.json`
+   temp file (see [why that file is write-denied](#filesystem-rule-mechanics)).
+   One covers aws-cli v2's `~/.aws/cli/cache/session.db` metadata read.
+   Not suppressed on purpose: the browser-profile probes (Chrome, Arc,
+   Edge, Vivaldi) — four lines at startup, and exactly the lines worth
+   seeing if an agent tries those paths later — and the `.env` metadata
+   probe Claude Code's periodic `git status` makes in any repo that has
+   one (git stats every worktree file; the deny glob is doing its job).
+   Extend it if recurring non-actionable noise shows up.
 
 **Security invariant.** Violation lines flow into the agent's context,
 so `~/.local/state/srt` must be readable but **never writable** from
@@ -339,9 +370,26 @@ to `allowRead`, or stage it under a name the glob misses (`.crt`,
 
 **`denyWrite` for Claude's own config.** Writes to
 `~/.claude/settings.json` install hooks that execute *outside* the
-sandbox on the next start, and `~/.claude/CLAUDE.md` is memory the next
-session treats as authoritative. Both are persistence vectors upstream's
-auto-deny list doesn't cover.
+sandbox on the next start, `~/.claude/CLAUDE.md` is memory the next
+session treats as authoritative, and `~/.claude.json` holds the
+user-scope `mcpServers` registrations — commands Claude Code runs on the
+next launch outside the sandbox — alongside MCP approvals and per-project
+state. All three are persistence vectors upstream's auto-deny list
+doesn't cover. `~/.claude.json` was in `allowWrite` until the AWS
+release, but that allowance never worked: Claude Code writes it as
+`~/.claude.json.tmp.<pid>.<random>` and renames, and the temp name
+matched no rule, so every session has in fact run without persisting
+it. The deny is now deliberate (the `.lock` file stays writable), the
+cost is unchanged — MCP approvals, "don't ask again" answers, tip and
+startup counters made inside are lost at exit, which Claude Code handles
+quietly — and the six temp-file denials per launch are suppressed via
+`ignoreViolations`.
+
+**`~/Library/Caches/claude-cli-nodejs` is writable** (and readable in
+denyall). It holds MCP server diagnostic logs that nothing reads back as
+configuration; blocking it bought no security and produced a denial per
+log line, ten in the first minute of a session with the Mintlify MCP
+server.
 
 ## Cargo and Rust
 
