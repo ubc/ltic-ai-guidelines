@@ -36,6 +36,7 @@ deps:
     node -e 'const [M,m]=process.versions.node.split(".").map(Number); process.exit(M>22||(M===22&&m>=12)?0:1)' \
       && echo "  ok   node $(node --version)" || { echo "  FAIL node $(node --version) — srt 0.0.81 needs >= 22.12 (nvm install 22)"; exit 1; }
     command -v gh >/dev/null && echo "  ok   gh" || echo "  note gh not found — GitHub token masking will be skipped (brew install gh to enable)"
+    command -v aws >/dev/null && echo "  ok   aws" || echo "  note aws not found — CCX_AWS_PROFILES (AWS inside the sandbox) will be unavailable (brew install awscli to enable)"
 
 # clone/update the ltic-main fork, build it, install `srt` globally
 install-srt:
@@ -146,7 +147,7 @@ install-hook:
       echo "  ok   registered PostToolUse(Bash) hook in $s (backup: $s.bak)"
     fi
 
-# verify the whole install: tools, configs, egress, CA trust, hook, and gh + git-over-SSH smoke tests
+# verify the whole install: tools, configs, egress, CA trust, hook, gh + git-over-SSH smoke tests, and AWS when CCX_AWS_PROFILES is set
 check:
     #!/usr/bin/env bash
     set -uo pipefail
@@ -231,5 +232,17 @@ check:
       echo "  skip no keys in ssh-agent (ssh-add first to exercise git-over-SSH)"
     fi
 
+
+    echo "11. AWS smoke test (masked SigV4 re-signing through the wrapper)"
+    if [ -n "${CCX_AWS_PROFILES:-}" ]; then
+      first="${CCX_AWS_PROFILES%%[ ,]*}"
+      stem="$(printf '%s\n' "$first" | tr 'a-z-' 'A-Z_' | tr -c 'A-Z0-9_\n' '_')"
+      out="$( set +e; source "{{dir}}/.bashrc.example"; _ccx_run "$deny" sh -c 'aws sts get-caller-identity --profile '"$first"' --query Arn --output text; echo "key=$CCX_AWS_'"$stem"'_ACCESS_KEY_ID"' 2>&1 )"
+      arn="$(grep -m1 '^arn:' <<<"$out")"; key="$(sed -n 's/^key=//p' <<<"$out")"
+      if [ -n "$arn" ] && [[ "$key" == fake_* ]]; then ok "aws sts get-caller-identity --profile $first → $arn (the sandbox holds $key)"
+      else fail "AWS via $first failed inside the sandbox: $(grep -v '^ccx: aws .* → arn:' <<<"$out" | head -3 | tr '\n' ' ') — try: CCX_AWS_PROFILES=$first ccx_exec aws sts get-caller-identity"; fi
+    else
+      echo "  skip CCX_AWS_PROFILES unset (CCX_AWS_PROFILES=<profile> just check to exercise AWS)"
+    fi
     echo
     [ $failed -eq 0 ] && echo "all checks passed" || { echo "some checks FAILED"; exit 1; }

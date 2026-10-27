@@ -107,7 +107,8 @@
       "Library/Preferences/ByHost",
       "mach-lookup com.apple.dnssd.service",
       "mach-lookup com.apple.usymptomsd",
-      "/.zshenv"
+      "/.zshenv",
+      "/.aws/cli/cache/session.db"
     ]
   },
   "enableWeakerNetworkIsolation": true,

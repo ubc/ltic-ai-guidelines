@@ -16,7 +16,7 @@ dives live in [DETAILS.md](DETAILS.md).
 
 | File | Purpose |
 |---|---|
-| `justfile` | `just setup` / `just upgrade` / `just check` — installs and verifies everything below, including `gh` and git-over-SSH smoke tests |
+| `justfile` | `just setup` / `just upgrade` / `just check` — installs and verifies everything below, including `gh`, git-over-SSH and (opt-in) AWS smoke tests |
 | `.srt-claude-denyall.json` | Restrictive posture — default-deny reads under `/Users`, explicit allow-list |
 | `.srt-claude-allowall.json` | Permissive posture — default-allow reads, explicit deny-list for sensitive paths |
 | `.zshrc.example` | Shell functions (`ccx`, `ccx_permissive`, `ccx_exec`, `srtlog`) for zsh |
@@ -70,6 +70,10 @@ too much friction.
 - **`credentials.envVars` masks `GH_TOKEN`** — the sandbox sees a fake
   token; the proxy injects the real one only on egress to
   `github.com` / `*.github.com` ([details](DETAILS.md#gh-and-glab)).
+- **`~/.aws` stays denied in both postures.** AWS access is opt-in per
+  launch via `CCX_AWS_PROFILES`: the keys are masked like `GH_TOKEN` and
+  the proxy re-signs SigV4 requests toward `*.amazonaws.com`
+  ([details](DETAILS.md#aws-credentials)).
 - **Credential globs in `denyRead`** — `/**/.env*`, `/**/*.pem`,
   `/**/id_rsa*`, … deny reads everywhere, even inside `allowRead`'d
   paths. Patterns need a leading `/` to be global. Known-safe names the
@@ -109,6 +113,15 @@ On every launch `_ccx_run`:
   sandbox sees a fake token and the proxy injects the real one only
   toward GitHub ([details](DETAILS.md#gh-and-glab)). `glab` needs
   nothing — it reads its own config file.
+- **Carries AWS credentials in, masked, when asked** — with
+  `CCX_AWS_PROFILES="la-shared la-dev" ccx`, each named profile's
+  temporary keys are exported outside (saml2aws and IAM Identity Center
+  profiles alike), masked the same way as `GH_TOKEN`, and re-signed by
+  the proxy only toward `*.amazonaws.com`; a sandbox-only AWS config
+  makes `--profile` work inside while `~/.aws` stays unreadable
+  ([details](DETAILS.md#aws-credentials)). Without the variable nothing
+  AWS-related enters the sandbox — the outer shell's `AWS_*` credential
+  variables are always stripped.
 - **Maintains the persistent MITM CA** — generates
   `~/.config/srt/mitm-ca.{crt,key}` on first launch so srt signs with
   the same CA every session (trusted once in the keychain, setup
@@ -304,6 +317,11 @@ the first two things to reach for.
 - **`pnpm add -g`** — writes to `$PNPM_HOME/bin`; project installs work
   inside via the pinned store. uv needs nothing
   ([details](DETAILS.md#pnpm-and-uv)).
+- **AWS logins** — `just login` / `just login-all` / `just hc-login`
+  (or `saml2aws login`, `aws sso login`, `aws configure`): they write
+  `~/.aws`, which is unreadable inside. Credentials are a launch-time
+  snapshot, so when a saml2aws session (1 h) runs out: exit, log in
+  again, relaunch ([details](DETAILS.md#aws-credentials)).
 
 ### Errors decoded
 
@@ -317,6 +335,8 @@ the first two things to reach for.
 | srt exits 1 at launch | Invalid, empty or unreadable settings file | `just check` (or `jq . ~/.srt-claude-denyall.json`) |
 | "unrecognized settings key" warning at launch | A key the current fork no longer knows (e.g. a leftover `denyReadAlways`) | `just install-configs`, or migrate by hand ([upgrade notes](DETAILS.md#upgrade-notes-by-version)) |
 | A `.pem` / `.key` / `.env*` file is unreadable — or a whole `.env/` venv or `credentials/` directory | Credential globs deny those names everywhere, folders included | Add a narrower glob or exact path to `allowRead`, or rename (`.venv`, `cert.pem.txt`) ([details](DETAILS.md#filesystem-rule-mechanics)) |
+| `aws` says the config profile could not be found, or `Unable to locate credentials` | The sandbox never reads `~/.aws`; only profiles named in `CCX_AWS_PROFILES` exist inside | Relaunch with `CCX_AWS_PROFILES="<profile> …" ccx` ([details](DETAILS.md#aws-credentials)) |
+| An S3 upload gets a `403` naming a streaming / aws-chunked signature | The proxy can't re-sign aws-chunked uploads | The wrapper sets `AWS_REQUEST_CHECKSUM_CALCULATION=when_required` so the CLI and SDKs send `UNSIGNED-PAYLOAD`; a tool that overrides that setting needs it too ([details](DETAILS.md#aws-credentials)) |
 
 ```bash
 git config credential.helper ''
@@ -344,6 +364,29 @@ git config --add credential.helper '!gh auth git-credential'
   ```
 - **`gh` and `glab` work as-is** — the masked `GH_TOKEN` and glab's own
   config file are enough ([details](DETAILS.md#gh-and-glab)).
+
+### AWS
+
+- **Opt in per launch, naming the profiles the task needs:**
+  ```bash
+  CCX_AWS_PROFILES="la-shared la-dev" ccx                     # space- or comma-separated
+  CCX_AWS_PROFILES=la-shared ccx_exec aws sts get-caller-identity
+  ```
+  Each profile is checked with `sts get-caller-identity` outside first;
+  an expired or unknown one aborts the launch naming the login command,
+  and each live one prints its role ARN. Inside, `aws --profile <name>`
+  and boto3 (`profile_name=`) see exactly those profiles, the first one
+  doubling as `[default]`. The sandbox holds only fake keys; the proxy
+  signs the real requests toward `*.amazonaws.com`
+  ([details](DETAILS.md#aws-credentials)).
+- **What the sandbox can do is bounded by the roles, not the wrapper:**
+  the agent can run any AWS action the named roles allow until the
+  credentials expire. Name non-production profiles unless the task needs
+  production, and let Claude Code's permission prompts gate the commands.
+- **Uploads** sign `UNSIGNED-PAYLOAD` (the wrapper sets the checksum
+  variables) because aws-chunked streaming uploads cannot be re-signed;
+  signed bodies are buffered up to 64 MiB. Presigned URLs and SigV4A
+  requests made with the masked keys are refused with a `403`.
 
 ### Terminal
 
