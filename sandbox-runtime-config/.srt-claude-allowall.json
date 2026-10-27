@@ -98,19 +98,20 @@
       "~/.claude",
       "~/.cache",
       "~/.npm",
-      "~/.claude.json",
       "~/.claude.json.lock",
       "~/.local/state/claude",
       "~/.local/share/uv",
       "~/.cargo/registry",
       "~/.cargo/git",
       "~/.cargo/.package-cache",
-      "~/Library/pnpm/store"
+      "~/Library/pnpm/store",
+      "~/Library/Caches/claude-cli-nodejs"
     ],
     "denyWrite": [
       "~/.claude/settings.json",
       "~/.claude/settings.local.json",
-      "~/.claude/CLAUDE.md"
+      "~/.claude/CLAUDE.md",
+      "~/.claude.json"
     ]
   },
   "ignoreViolations": {
@@ -122,7 +123,12 @@
       "mach-lookup com.apple.dnssd.service",
       "mach-lookup com.apple.usymptomsd",
       "/.zshenv",
-      "/.aws/cli/cache/session.db"
+      "/.aws/cli/cache/session.db",
+      "/.claude.json.tmp.",
+      "mach-lookup com.apple.FSEvents",
+      "Library/Keychains/login.keychain-db",
+      "Claude Code URL Handler.app",
+      "/.zprofile"
     ]
   },
   "enableWeakerNetworkIsolation": true,
